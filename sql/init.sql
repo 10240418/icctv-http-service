@@ -63,6 +63,7 @@ CREATE TABLE `orangepis` (
   `icctv_auth_service_remote_port` INT NOT NULL COMMENT '远程认证服务端口',
   `ssh_remote_port` INT NOT NULL COMMENT 'SSH远程端口',
   `admin_ports` JSON COMMENT '可用管理端口列表,JSON格式',
+  `mediamtx_paths` JSON COMMENT 'MediaMTX路径列表',
   `is_active` BOOLEAN DEFAULT TRUE COMMENT '是否激活',
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -101,11 +102,11 @@ INSERT INTO `buildings` (`base`, `ismartid`, `name`, `remark`, `created_at`, `up
 ('building_c', 'ismart_003', 'C栋', '设备机房', NOW(), NOW());
 
 -- 插入OrangePi设备
-INSERT INTO `orangepis` (`base`, `name`, `icctv_auth_service_remote_port`, `ssh_remote_port`, `admin_ports`, `is_active`, `created_at`, `updated_at`) VALUES
-('building_a', 'OrangePi-A-001', 30001, 20001, '[1, 2, 3]', TRUE, NOW(), NOW()),
-('building_a', 'OrangePi-A-002', 30002, 20002, '[1, 2, 3, 4]', TRUE, NOW(), NOW()),
-('building_b', 'OrangePi-B-001', 30003, 20003, '[1, 2]', TRUE, NOW(), NOW()),
-('building_c', 'OrangePi-C-001', 30004, 20004, '[1, 2, 3, 4, 5, 6]', FALSE, NOW(), NOW());
+INSERT INTO `orangepis` (`base`, `name`, `icctv_auth_service_remote_port`, `ssh_remote_port`, `admin_ports`, `mediamtx_paths`, `is_active`, `created_at`, `updated_at`) VALUES
+('building_a', 'OrangePi-A-001', 30001, 20001, '[1, 2, 3]', JSON_ARRAY(JSON_OBJECT('channel', 1, 'url', '/cam/1')), TRUE, NOW(), NOW()),
+('building_a', 'OrangePi-A-002', 30002, 20002, '[1, 2, 3, 4]', JSON_ARRAY(JSON_OBJECT('channel', 1, 'url', '/cam/1'), JSON_OBJECT('channel', 2, 'url', '/cam/2')), TRUE, NOW(), NOW()),
+('building_b', 'OrangePi-B-001', 30003, 20003, '[1, 2]', JSON_ARRAY(), TRUE, NOW(), NOW()),
+('building_c', 'OrangePi-C-001', 30004, 20004, '[1, 2, 3, 4, 5, 6]', JSON_ARRAY(JSON_OBJECT('channel', 8, 'url', '/cam/8')), FALSE, NOW(), NOW());
 
 -- 插入公网配置
 INSERT INTO `public_net_configs` (`external_ip`, `created_at`, `updated_at`) VALUES
@@ -128,7 +129,6 @@ SELECT `id`, `base`, `name`, `icctv_auth_service_remote_port`, `ssh_remote_port`
 
 SELECT '=== 公网配置 ===' as '';
 SELECT `id`, `external_ip`, `created_at`, `updated_at` FROM `public_net_configs` WHERE `deleted_at` IS NULL;
-
 -- =====================================================
 -- 5. 旧库结构清理脚本（可选）
 --    作用：在老版本数据库中，删除 base / 旧 ismart 列，只保留 ismart_id
@@ -154,3 +154,4 @@ ALTER TABLE `buildings` DROP COLUMN `ismartid`;
 
 -- 恢复外键检查
 SET FOREIGN_KEY_CHECKS = 1;
+

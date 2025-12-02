@@ -72,7 +72,7 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	// 导入services包以访问错误常量
 	// 注意：这里使用字符串匹配，因为不能直接导入services包（避免循环依赖）
 	errMsg := err.Error()
-	
+
 	// 根据错误消息判断错误类型
 	switch errMsg {
 	case "building not found", "orangepi not found", "nvr not found":

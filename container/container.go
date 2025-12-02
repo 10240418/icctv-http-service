@@ -1,6 +1,10 @@
 package container
 
 import (
+	"os"
+	"strconv"
+	"time"
+
 	"icctv-http-service/controllers"
 	"icctv-http-service/databases"
 	"icctv-http-service/middlewares"
@@ -23,10 +27,11 @@ type ServiceSet struct {
 
 // Container 提供项目运行所需的依赖
 type Container struct {
-	DB          *gorm.DB
-	Services    ServiceSet
-	Controllers routes.ControllerSet
-	Middlewares routes.MiddlewareSet
+	DB            *gorm.DB
+	Services      ServiceSet
+	Controllers   routes.ControllerSet
+	Middlewares   routes.MiddlewareSet
+	HealthChecker *services.HealthChecker
 }
 
 // Build 初始化所有依赖
@@ -60,10 +65,21 @@ func Build() (*Container, error) {
 		Auth: middlewares.NewAuthMiddleware(serviceSet.Auth),
 	}
 
+	// 初始化健康检查器
+	// 默认每30分钟检查一次，可通过 HEALTH_CHECK_INTERVAL 环境变量配置（单位：分钟）
+	healthCheckInterval := 30 * time.Minute
+	if intervalStr := os.Getenv("HEALTH_CHECK_INTERVAL"); intervalStr != "" {
+		if minutes, err := strconv.Atoi(intervalStr); err == nil && minutes > 0 {
+			healthCheckInterval = time.Duration(minutes) * time.Minute
+		}
+	}
+	healthChecker := services.NewHealthChecker(db, serviceSet.PublicNet, healthCheckInterval)
+
 	return &Container{
-		DB:          db,
-		Services:    serviceSet,
-		Controllers: ctrlSet,
-		Middlewares: middlewareSet,
+		DB:            db,
+		Services:      serviceSet,
+		Controllers:   ctrlSet,
+		Middlewares:   middlewareSet,
+		HealthChecker: healthChecker,
 	}, nil
 }

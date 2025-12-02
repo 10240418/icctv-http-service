@@ -28,12 +28,12 @@ type AdminController struct {
 	service *services.AdminService
 }
 
-//0. NewAdminController 构造函数
+// 0. NewAdminController 构造函数
 func NewAdminController(service *services.AdminService) *AdminController {
 	return &AdminController{service: service}
 }
 
-//1. List 列表或详情
+// 1. List 列表或详情
 func (c *AdminController) List(w http.ResponseWriter, r *http.Request) {
 	if idStr := r.URL.Query().Get("id"); idStr != "" {
 		id, err := strconv.ParseInt(idStr, 10, 64)
@@ -71,7 +71,7 @@ type createAdminRequest struct {
 	Password string `json:"password"`
 }
 
-//2. Create 创建管理员
+// 2. Create 创建管理员
 func (c *AdminController) Create(w http.ResponseWriter, r *http.Request) {
 	var req createAdminRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -92,7 +92,7 @@ type updateAdminRequest struct {
 	Password string `json:"password"`
 }
 
-//3. Update 更新管理员
+// 3. Update 更新管理员
 func (c *AdminController) Update(w http.ResponseWriter, r *http.Request) {
 	var req updateAdminRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -116,7 +116,7 @@ type deleteAdminRequest struct {
 	ID int64 `json:"id"`
 }
 
-//4. Delete 删除管理员
+// 4. Delete 删除管理员
 func (c *AdminController) Delete(w http.ResponseWriter, r *http.Request) {
 	var req deleteAdminRequest
 	if err := decodeJSON(r, &req); err != nil {

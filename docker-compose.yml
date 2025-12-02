@@ -1,44 +1,42 @@
 services:
   mysql:
-    image: mysql:8.0
+    image: docker.1ms.run/mysql:8.0
     container_name: icctv-mysql
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p1090119"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
       timeout: 5s
       retries: 5
     environment:
-      MYSQL_ROOT_PASSWORD: 1090119 # 数据库root密码（请自行修改）
-      MYSQL_DATABASE: icctv_http_service # 默认创建的数据库名
-      MYSQL_USER: icctv # 业务用户
-      MYSQL_PASSWORD: 1090119 # 业务用户密码
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-icctv_http_service}
+      MYSQL_USER: ${MYSQL_USER:-icctv}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     ports:
-      - "3307:3306" # 宿主机 3306 -> 容器 3306
+      - "3307:3306"
     volumes:
-      - icctv_mysql_data:/var/lib/mysql # 使用 Docker 卷持久化数据
+      - icctv_mysql_data:/var/lib/mysql
+      # 挂载初始化脚本，首次启动时自动执行（创建支持 Docker 网络的用户）
+      - ./sql/00_init_user.sh:/docker-entrypoint-initdb.d/00_init_user.sh:ro
 
   app:
-    image: golang:1.25
+    image: icctv-http-service:latest
     container_name: icctv-app
-    working_dir: /app
     restart: unless-stopped
-    command: sh -c "go run ./main.go"
     depends_on:
       mysql:
         condition: service_healthy
     environment:
-      DB_DRIVER: mysql
-      DB_HOST: mysql
-      DB_PORT: 3306
-      DB_USER: icctv
-      DB_PASS: 1090119
-      DB_NAME: icctv_http_service
-      HTTP_ADDR: :8080
-    volumes:
-      - .:/app
+      DB_DRIVER: ${DB_DRIVER:-mysql}
+      DB_HOST: ${DB_HOST:-mysql}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:-icctv}
+      DB_PASS: ${DB_PASS}
+      DB_NAME: ${DB_NAME:-icctv_http_service}
+      HTTP_ADDR: ${HTTP_ADDR:-:8080}
     ports:
-      - "8080:8080"
+      - "32001:8080"
 
 volumes:
   icctv_mysql_data:

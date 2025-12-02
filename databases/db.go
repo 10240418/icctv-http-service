@@ -1,6 +1,7 @@
 package databases
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -58,6 +59,12 @@ func Init() (*gorm.DB, error) {
 			)
 
 			conn, err = gorm.Open(gmysql.Open(dsn), cfg)
+
+			if err == nil {
+				if fixErr := fixLegacyMySQLIndexes(conn); fixErr != nil {
+					log.Printf("Warning: failed to fix legacy MySQL indexes: %v", fixErr)
+				}
+			}
 		default:
 			dsn := getenvDefault("DATABASE_PATH", "icctv.db")
 			conn, err = gorm.Open(sqlite.Open(dsn), cfg)
@@ -140,6 +147,37 @@ func initDefaultData(db *gorm.DB) error {
 		}
 
 		log.Println("✓ Default admin account created (username: admin, password: 123456)")
+	}
+
+	return nil
+}
+
+// fixLegacyMySQLIndexes 清理旧版遗留索引，避免 AutoMigrate 冲突
+func fixLegacyMySQLIndexes(db *gorm.DB) error {
+	const query = `
+SELECT NON_UNIQUE AS non_unique
+FROM information_schema.statistics
+WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?
+LIMIT 1`
+
+	var idxInfo struct {
+		NonUnique int `gorm:"column:non_unique"`
+	}
+
+	err := db.Raw(query, "buildings", "idx_buildings_i_smart_id").Scan(&idxInfo).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	// 旧索引为非唯一时删除，交由 GORM 重新创建唯一索引
+	if idxInfo.NonUnique == 1 {
+		if err := db.Exec("ALTER TABLE `buildings` DROP INDEX `idx_buildings_i_smart_id`").Error; err != nil {
+			return err
+		}
+		log.Println("✓ Dropped legacy non-unique index idx_buildings_i_smart_id")
 	}
 
 	return nil

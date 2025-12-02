@@ -59,6 +59,7 @@ CREATE TABLE `orangepis` (
   `name` VARCHAR(255) NOT NULL COMMENT 'OrangePi设备名称',
   `icctv_auth_service_remote_port` INT NOT NULL COMMENT '远程认证服务端口',
   `ssh_remote_port` INT NOT NULL COMMENT 'SSH远程端口',
+  `mediamtx_paths` JSON NULL COMMENT 'MediaMTX路径配置(JSON)',
   `is_active` BOOLEAN DEFAULT TRUE COMMENT '是否激活',
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -118,11 +119,11 @@ INSERT INTO `buildings` (`ismart_id`, `name`, `remark`, `created_at`, `updated_a
 ('ismart_003', 'C栋宿舍', '员工宿舍楼', NOW(), NOW());
 
 -- 插入OrangePi设备
-INSERT INTO `orangepis` (`ismart_id`, `name`, `icctv_auth_service_remote_port`, `ssh_remote_port`, `is_active`, `created_at`, `updated_at`) VALUES
-('ismart_001', 'OrangePi-A-001', 30001, 20001, TRUE, NOW(), NOW()),
-('ismart_001', 'OrangePi-A-002', 30002, 20002, TRUE, NOW(), NOW()),
-('ismart_002', 'OrangePi-B-001', 30003, 20003, TRUE, NOW(), NOW()),
-('ismart_003', 'OrangePi-C-001', 30004, 20004, FALSE, NOW(), NOW());
+INSERT INTO `orangepis` (`ismart_id`, `name`, `icctv_auth_service_remote_port`, `ssh_remote_port`, `mediamtx_paths`, `is_active`, `created_at`, `updated_at`) VALUES
+('ismart_001', 'OrangePi-A-001', 30001, 20001, JSON_ARRAY(JSON_OBJECT('channel', 1, 'url', '/cam/1')), TRUE, NOW(), NOW()),
+('ismart_001', 'OrangePi-A-002', 30002, 20002, JSON_ARRAY(JSON_OBJECT('channel', 1, 'url', '/cam/1'), JSON_OBJECT('channel', 2, 'url', '/cam/2')), TRUE, NOW(), NOW()),
+('ismart_002', 'OrangePi-B-001', 30003, 20003, JSON_ARRAY(), TRUE, NOW(), NOW()),
+('ismart_003', 'OrangePi-C-001', 30004, 20004, JSON_ARRAY(JSON_OBJECT('channel', 8, 'url', '/cam/8')), FALSE, NOW(), NOW());
 
 -- 插入公网配置
 INSERT INTO `public_net_configs` (`external_ip`, `created_at`, `updated_at`) VALUES

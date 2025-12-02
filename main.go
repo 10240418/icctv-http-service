@@ -4,6 +4,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	appcontainer "icctv-http-service/container"
 	"icctv-http-service/middlewares"
@@ -43,6 +45,19 @@ func main() {
 	// 应用 CORS 中间件
 	corsMiddleware := middlewares.NewCORSMiddleware()
 	handler := corsMiddleware.Handle(mux)
+
+	// 启动后台健康检查服务
+	container.HealthChecker.Start()
+
+	// 优雅关闭处理
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		<-sigChan
+		log.Println("Shutting down...")
+		container.HealthChecker.Stop()
+		os.Exit(0)
+	}()
 
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {

@@ -29,12 +29,12 @@ type DeviceInfoSummary struct {
 	LastSync        time.Time `json:"lastSync"`
 }
 
-//0. NewDeviceService 构造函数
+// 0. NewDeviceService 构造函数
 func NewDeviceService(db *gorm.DB) *DeviceService {
 	return &DeviceService{db: db}
 }
 
-//1. Summary 获取设备概览数据
+// 1. Summary 获取设备概览数据
 func (s *DeviceService) Summary(ctx context.Context) (DeviceInfoSummary, error) {
 	var (
 		totalDevices    int64

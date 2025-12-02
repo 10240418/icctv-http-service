@@ -5,7 +5,8 @@
 param(
   [string]$BaseUrl = "http://127.0.0.1:8080",
   [string]$Username = "admin",
-  [string]$Password = "123456"
+  [string]$Password = "admin123",
+  [int]$RemoteOrangePiId = 2
 )
 
 # 设置 UTF-8 编码以正确显示中文
@@ -93,345 +94,100 @@ Write-Host "ICCTV HTTP Service - Complete API Test" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ==================== 核心管理接口 ====================
-Write-Host "========== 核心管理接口 ==========" -ForegroundColor Yellow
-Write-Host ""
-
-# 1. Health Check
-$healthResp = Test-Endpoint "Health Check" "GET" "$BaseUrl/health"
-Write-Host ""
-
-# 3. Admin Login
-$loginBody = @{
-  username = $Username
-  password = $Password
-} | ConvertTo-Json
-
+# ==================== 认证接口 (Auth) ====================
+Write-Host "========== 认证接口 ==========" -ForegroundColor Yellow
+$loginBody = @{username = $Username; password = $Password } | ConvertTo-Json
 $loginResp = Test-Endpoint "Admin Login" "POST" "$BaseUrl/api/auth/login" @{} $loginBody
-
-if ($null -eq $loginResp) {
-  Write-Host ""
-  Write-Host "❌ Login failed! Cannot continue with protected endpoints." -ForegroundColor Red
-  exit 1
-}
-
+if ($null -eq $loginResp) { Write-Host "❌ Login failed, abort tests!" -ForegroundColor Red; exit 1 }
 $jwtToken = $loginResp.data.accessToken
 $authHeaders = @{"Authorization" = "Bearer $jwtToken" }
-Write-Host ""
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
-# ==================== 管理员账户管理 ====================
-Write-Host "========== 管理员账户管理 (Adminer) ==========" -ForegroundColor Yellow
-Write-Host ""
-
-# 4. Query Admin List
-$adminListResp = Test-Endpoint "Query Admin List" "GET" "$BaseUrl/api/admin" $authHeaders
-Write-Host ""
-
-# 5. Create Admin
+# ==================== 管理员接口 (Admin) ====================
+Write-Host "========== 管理员账户管理 ==========" -ForegroundColor Yellow
 $testId = Get-Random -Minimum 1000 -Maximum 9999
-$adminBody = @{
-  username = "test_admin_$testId"
-  password = "testpass123"
-} | ConvertTo-Json
-
+$adminBody = @{username = "test_admin_$testId"; password = "testpwd123" } | ConvertTo-Json
 $adminResp = Test-Endpoint "Create Admin" "POST" "$BaseUrl/api/admin" $authHeaders $adminBody
-if ($adminResp) {
-  $testAdminId = $adminResp.data.id
-  Write-Host "    Created Admin ID: $testAdminId" -ForegroundColor Gray
-}
-Write-Host ""
+$adminId = if ($adminResp) { $adminResp.data.id } else { 0 }
+Test-Endpoint "查询管理员" "GET" "$BaseUrl/api/admin" $authHeaders
+$updateAdminBody = @{id = $adminId; username = "updated_admin_$testId" } | ConvertTo-Json
+Test-Endpoint "更新管理员" "PUT" "$BaseUrl/api/admin" $authHeaders $updateAdminBody
+$delAdminBody = @{id = $adminId } | ConvertTo-Json
+Test-Endpoint "删除管理员" "DELETE" "$BaseUrl/api/admin" $authHeaders $delAdminBody
 
-# 6. Update Admin (if created)
-if ($testAdminId) {
-  $updateAdminBody = @{
-    id       = $testAdminId
-    username = "updated_admin_$testId"
-  } | ConvertTo-Json
-    
-  Test-Endpoint "Update Admin" "PUT" "$BaseUrl/api/admin" $authHeaders $updateAdminBody
-  Write-Host ""
-}
+# ==================== 建筑信息管理 (Building) ====================
+Write-Host "========== 建筑信息管理 ==========" -ForegroundColor Yellow
+$buildId = Get-Random -Minimum 10000 -Maximum 90000
+$buildBody = @{ismartid = "test_building_$buildId"; name = "测试楼栋_$buildId"; remark = "备注_$buildId" } | ConvertTo-Json
+$buildResp = Test-Endpoint "创建建筑" "POST" "$BaseUrl/api/building" $authHeaders $buildBody
+$buildingId = if ($buildResp) { $buildResp.data.id }else { 0 }
+Test-Endpoint "查询建筑列表" "GET" "$BaseUrl/api/building" $authHeaders
+$updateBuildBody = @{name = "已更名楼栋_$buildId" } | ConvertTo-Json
+Test-Endpoint "更新建筑" "PUT" "$BaseUrl/api/building?id=$buildingId" $authHeaders $updateBuildBody
+$delBuildBody = @{id = $buildingId } | ConvertTo-Json
+Write-Host "    Building 已创建，ID: $buildingId，用于后续绑定测试`n" -ForegroundColor DarkGray
 
-# ==================== 建筑信息管理 ====================
-Write-Host "========== 建筑信息管理 (Building) ==========" -ForegroundColor Yellow
-Write-Host ""
-
-# 12. Query Building List
-$buildingListResp = Test-Endpoint "Query Building List" "GET" "$BaseUrl/api/building" $authHeaders
-Write-Host ""
-
-# 13. Create Building
-$buildId = Get-Random -Minimum 10000 -Maximum 99999
-$buildBody = @{
-  ismartid = "test_building_$buildId"
-  name     = "测试楼栋_$buildId"
-  remark   = "自动化测试创建"
-} | ConvertTo-Json
-
-$buildResp = Test-Endpoint "Create Building" "POST" "$BaseUrl/api/building" $authHeaders $buildBody
-if ($buildResp) {
-  $testBuildId = $buildResp.data.id
-  $testISmartId = $buildResp.data.ismartid
-  Write-Host "    Created Building ID: $testBuildId" -ForegroundColor Gray
-}
-Write-Host ""
-
-# 14. Update Building (if created)
-if ($testBuildId) {
-  $updateBuildBody = @{
-    name   = "更新后的楼栋_$buildId"
-    remark = "已更新"
-  } | ConvertTo-Json
-    
-  Test-Endpoint "Update Building" "PUT" "$BaseUrl/api/building?id=$testBuildId" $authHeaders $updateBuildBody
-  Write-Host ""
-}
-
-# ==================== OrangePi设备管理 ====================
+# ==================== OrangePi 设备 (Device) ====================
 Write-Host "========== OrangePi 设备管理 ==========" -ForegroundColor Yellow
-Write-Host ""
+$deviceId = Get-Random -Minimum 100 -Maximum 999
+$devBody = @{ismartid = "test_building_$buildId"; name = "TestDevice_$deviceId"; icctv_auth_service_remote_port = 30000 + $deviceId; ssh_remote_port = 20000 + $deviceId; is_active = $true } | ConvertTo-Json
+$devResp = Test-Endpoint "创建设备" "POST" "$BaseUrl/api/device" $authHeaders $devBody
+$devID = if ($devResp) { $devResp.data.id }else { 0 }
+Test-Endpoint "查询设备" "GET" "$BaseUrl/api/device" $authHeaders
+$updateDevBody = @{name = "UpdatedDevice_$deviceId" } | ConvertTo-Json
+Test-Endpoint "更新设备" "PUT" "$BaseUrl/api/device?id=$devID" $authHeaders $updateDevBody
+$delDevBody = @{id = $devID } | ConvertTo-Json
+Write-Host "    OrangePi 已创建，ID: $devID，将参与绑定/远程测试`n" -ForegroundColor DarkGray
 
-# 8. Query Device List
-$deviceListResp = Test-Endpoint "Query OrangePi List" "GET" "$BaseUrl/api/device" $authHeaders
-Write-Host ""
+# ==================== OrangePi 远程接口 ====================
+Write-Host "========== OrangePi 远程接口 ==========" -ForegroundColor Yellow
+# 如需测试真实在线 Orangepi，可通过 RemoteOrangePiId 指定已有设备，默认为 2
+$remoteTargetId = if ($RemoteOrangePiId -gt 0) { $RemoteOrangePiId } else { $devID }
+Write-Host "    远程接口使用的 OrangePi ID: $remoteTargetId" -ForegroundColor DarkGray
+Test-Endpoint "查询远程设备信息" "GET" "$BaseUrl/api/orangepi/remote/info?id=$remoteTargetId" $authHeaders
+Test-Endpoint "远程健康检查" "GET" "$BaseUrl/api/orangepi/remote/health?id=$remoteTargetId" $authHeaders
+$remoteBody = @{id = $remoteTargetId; ssh_remote_port = 22022; icctv_auth_service_remote_port = 33022 } | ConvertTo-Json
+Test-Endpoint "远程端口更新" "POST" "$BaseUrl/api/orangepi/remote/ports" $authHeaders $remoteBody
 
-# 9. Create Device (if building exists)
-if ($testISmartId) {
-  $devId = Get-Random -Minimum 100 -Maximum 999
-  $devBody = @{
-    ismartid                       = $testISmartId
-    name                           = "TestOrangePi_$devId"
-    icctv_auth_service_remote_port = (30000 + $devId)
-    ssh_remote_port                = (20000 + $devId)
-    is_active                      = $true
-  } | ConvertTo-Json
-    
-  $devResp = Test-Endpoint "Create OrangePi" "POST" "$BaseUrl/api/device" $authHeaders $devBody
-  if ($devResp) {
-    $testDevId = $devResp.data.id
-    Write-Host "    Created Device ID: $testDevId" -ForegroundColor Gray
-  }
-  Write-Host ""
-    
-  # 10. Update Device (if created)
-  if ($testDevId) {
-    $updateDevBody = @{
-      name                           = "UpdatedOrangePi_$devId"
-      icctv_auth_service_remote_port = (30000 + $devId + 1)
-    } | ConvertTo-Json
-        
-    Test-Endpoint "Update OrangePi" "PUT" "$BaseUrl/api/device?id=$testDevId" $authHeaders $updateDevBody
-    Write-Host ""
-  }
-}
+# ==================== NVR接口 ====================
+Write-Host "========== NVR管理 ==========" -ForegroundColor Yellow
+$nvrBody = @{name = "测试NVR设备"; url = "192.168.1.100:8080"; building_id = $buildingId; admin_user = @{name = "admin"; password = "admin123" }; users = @(@{name = "u1"; password = "p1" }, @{name = "u2"; password = "p2" }); rtsp_urls = @(@{channel = 1; url = "rtsp://...1" }) } | ConvertTo-Json -Depth 10
+$nvrResp = Test-Endpoint "创建NVR" "POST" "$BaseUrl/api/nvr" $authHeaders $nvrBody
+$nvrID = if ($nvrResp) { $nvrResp.data.id }else { 0 }
+Test-Endpoint "查询NVR" "GET" "$BaseUrl/api/nvr" $authHeaders
+$updateNvrBody = @{name = "更新NVR设备" } | ConvertTo-Json
+Test-Endpoint "更新NVR" "PUT" "$BaseUrl/api/nvr?id=$nvrID" $authHeaders $updateNvrBody
+$delNvrBody = @{id = $nvrID } | ConvertTo-Json
+Write-Host "    NVR 已创建，ID: $nvrID，将用于绑定测试`n" -ForegroundColor DarkGray
 
-# ==================== NVR 管理 ====================
-Write-Host "========== NVR (网络硬盘录像机) 管理 ==========" -ForegroundColor Yellow
-Write-Host ""
+# ==================== Building-OrangePi Bind接口 ====================
+Write-Host "========== Building-OrangePi 绑定 ==========" -ForegroundColor Yellow
+$bindBody = @{building_id = $buildingId; orangepi_id = $devID } | ConvertTo-Json
+Test-Endpoint "绑定设备到建筑" "POST" "$BaseUrl/api/bind/building-orangepi" $authHeaders $bindBody
+$getBindUrl = "$BaseUrl/api/bind/building-orangepi/$buildingId"
+Test-Endpoint "获取建筑OrangePi绑定" "GET" $getBindUrl $authHeaders
+$unbindBody = @{orangepi_id = $devID } | ConvertTo-Json
+Test-Endpoint "解绑OrangePi" "DELETE" "$BaseUrl/api/bind/building-orangepi" $authHeaders $unbindBody
 
-# 查询 NVR 列表
-$nvrListResp = Test-Endpoint "Query NVR List" "GET" "$BaseUrl/api/nvr" $authHeaders
-Write-Host ""
+# ==================== Building-NVR Bind接口 ====================
+Write-Host "========== Building-NVR 绑定 ==========" -ForegroundColor Yellow
+$bindNvrBody = @{building_id = $buildingId; nvr_id = $nvrID } | ConvertTo-Json
+Test-Endpoint "绑定NVR到建筑" "POST" "$BaseUrl/api/bind/building-nvr" $authHeaders $bindNvrBody
+$getBindNvrUrl = "$BaseUrl/api/bind/building-nvr/$buildingId"
+Test-Endpoint "获取建筑NVR绑定" "GET" $getBindNvrUrl $authHeaders
+$unbindNvrBody = @{nvr_id = $nvrID } | ConvertTo-Json
+Test-Endpoint "解绑NVR" "DELETE" "$BaseUrl/api/bind/building-nvr" $authHeaders $unbindNvrBody
 
-# 创建 NVR (包含 RTSPUrls)
-if ($testBuildId) {
-  $nvrBody = @{
-    name        = "测试NVR设备"
-    url         = "192.168.1.100:8080"
-    building_id = $testBuildId
-    admin_user  = @{
-      name     = "admin"
-      password = "admin123"
-    }
-    users       = @(
-      @{
-        name     = "operator1"
-        password = "pass123"
-      },
-      @{
-        name     = "operator2"
-        password = "pass456"
-      }
-    )
-    rtsp_urls   = @(
-      @{
-        channel = 1
-        url     = "rtsp://192.168.1.100:554/stream1"
-      },
-      @{
-        channel = 2
-        url     = "rtsp://192.168.1.100:554/stream2"
-      },
-      @{
-        channel = 3
-        url     = "rtsp://192.168.1.100:554/stream3"
-      },
-      @{
-        channel = 4
-        url     = "rtsp://192.168.1.100:554/stream4"
-      }
-    )
-  } | ConvertTo-Json -Depth 10
-    
-  $nvrResp = Test-Endpoint "Create NVR with RTSPUrls" "POST" "$BaseUrl/api/nvr" $authHeaders $nvrBody
-  if ($nvrResp) {
-    $testNvrId = $nvrResp.data.id
-    Write-Host "    Created NVR ID: $testNvrId" -ForegroundColor Gray
-    Write-Host "    RTSP Channels: $($nvrResp.data.rtsp_urls.Count)" -ForegroundColor Gray
-  }
-  Write-Host ""
-    
-  # 查询 NVR 详情
-  if ($testNvrId) {
-    $nvrDetailResp = Test-Endpoint "Get NVR Details" "GET" "$BaseUrl/api/nvr?id=$testNvrId" $authHeaders
-    if ($nvrDetailResp) {
-      Write-Host "    Name: $($nvrDetailResp.data.name)" -ForegroundColor Gray
-      Write-Host "    URL: $($nvrDetailResp.data.url)" -ForegroundColor Gray
-      Write-Host "    RTSP Channels:" -ForegroundColor Gray
-      foreach ($rtsp in $nvrDetailResp.data.rtsp_urls) {
-        Write-Host "      CH$($rtsp.channel): $($rtsp.url)" -ForegroundColor Gray
-      }
-    }
-    Write-Host ""
-        
-    # 更新 NVR (修改 RTSPUrls)
-    $updateNvrBody = @{
-      name      = "更新后的NVR设备"
-      rtsp_urls = @(
-        @{
-          channel = 1
-          url     = "rtsp://192.168.1.100:554/updated_stream1"
-        },
-        @{
-          channel = 2
-          url     = "rtsp://192.168.1.100:554/updated_stream2"
-        },
-        @{
-          channel = 5
-          url     = "rtsp://192.168.1.100:554/new_stream5"
-        }
-      )
-    } | ConvertTo-Json -Depth 10
-        
-    $updateNvrResp = Test-Endpoint "Update NVR RTSPUrls" "PUT" "$BaseUrl/api/nvr?id=$testNvrId" $authHeaders $updateNvrBody
-    if ($updateNvrResp) {
-      Write-Host "    Updated RTSP Channels: $($updateNvrResp.data.rtsp_urls.Count)" -ForegroundColor Gray
-    }
-    Write-Host ""
-  }
-}
-
-# ==================== Bind 接口测试 ====================
-Write-Host "========== Bind 关联关系管理 ==========" -ForegroundColor Yellow
-Write-Host ""
-
-# Building-OrangePi 绑定
-if ($testBuildId -and $testDevId) {
-  $bindBody = @{
-    building_id = $testBuildId
-    orangepi_id = $testDevId
-  } | ConvertTo-Json
-    
-  Test-Endpoint "Bind OrangePi to Building" "POST" "$BaseUrl/api/bind/building-orangepi" $authHeaders $bindBody
-  Write-Host ""
-    
-  # 查询 Building 关联的 OrangePi
-  Test-Endpoint "Get Building's OrangePis" "GET" "$BaseUrl/api/bind/building-orangepi/$testBuildId" $authHeaders
-  Write-Host ""
-}
-
-# Building-NVR 绑定
-if ($testBuildId -and $testNvrId) {
-  $bindNvrBody = @{
-    building_id = $testBuildId
-    nvr_id      = $testNvrId
-  } | ConvertTo-Json
-    
-  Test-Endpoint "Bind NVR to Building" "POST" "$BaseUrl/api/bind/building-nvr" $authHeaders $bindNvrBody
-  Write-Host ""
-    
-  # 查询 Building 关联的 NVR
-  Test-Endpoint "Get Building's NVRs" "GET" "$BaseUrl/api/bind/building-nvr/$testBuildId" $authHeaders
-  Write-Host ""
-}
+# ==================== 设备Info/网络配置 ====================
+Write-Host "========== 设备汇总&公网配置 ==========" -ForegroundColor Yellow
+Test-Endpoint "设备汇总信息" "GET" "$BaseUrl/api/device/info" $authHeaders
+$pubCfgBody = @{external_ip = "203.0.113.77" } | ConvertTo-Json
+Test-Endpoint "修改公网配置" "PUT" "$BaseUrl/api/publicnet/config" $authHeaders $pubCfgBody
 
 # ==================== 清理测试数据 ====================
 Write-Host "========== 清理测试数据 ==========" -ForegroundColor Yellow
-Write-Host ""
-
-$cleanup = Read-Host "是否删除测试数据? (y/n)"
-if ($cleanup -eq "y" -or $cleanup -eq "Y") {
-  # 解绑并删除 OrangePi
-  if ($testDevId) {
-    if ($testBuildId) {
-      $unbindBody = @{
-        building_id = $testBuildId
-        orangepi_id = $testDevId
-      } | ConvertTo-Json
-      Test-Endpoint "Unbind OrangePi" "DELETE" "$BaseUrl/api/bind/building-orangepi" $authHeaders $unbindBody
-      Write-Host ""
-    }
-        
-    $delDevBody = @{id = $testDevId } | ConvertTo-Json
-    Test-Endpoint "Delete OrangePi" "DELETE" "$BaseUrl/api/device" $authHeaders $delDevBody
-    Write-Host ""
-  }
-    
-  # 解绑并删除 NVR
-  if ($testNvrId) {
-    if ($testBuildId) {
-      $unbindNvrBody = @{
-        building_id = $testBuildId
-        nvr_id      = $testNvrId
-      } | ConvertTo-Json
-      Test-Endpoint "Unbind NVR" "DELETE" "$BaseUrl/api/bind/building-nvr" $authHeaders $unbindNvrBody
-      Write-Host ""
-    }
-        
-    $delNvrBody = @{id = $testNvrId } | ConvertTo-Json
-    Test-Endpoint "Delete NVR" "DELETE" "$BaseUrl/api/nvr" $authHeaders $delNvrBody
-    Write-Host ""
-  }
-    
-  # 删除 Building
-  if ($testBuildId) {
-    $delBuildBody = @{id = $testBuildId } | ConvertTo-Json
-    Test-Endpoint "Delete Building" "DELETE" "$BaseUrl/api/building" $authHeaders $delBuildBody
-    Write-Host ""
-  }
-    
-  # 删除 Admin
-  if ($testAdminId) {
-    $delAdminBody = @{id = $testAdminId } | ConvertTo-Json
-    Test-Endpoint "Delete Admin" "DELETE" "$BaseUrl/api/admin" $authHeaders $delAdminBody
-    Write-Host ""
-  }
-}
-else {
-  Write-Host "测试数据保留:" -ForegroundColor Cyan
-  if ($testAdminId) { Write-Host "  Admin ID: $testAdminId" -ForegroundColor Gray }
-  if ($testBuildId) { Write-Host "  Building ID: $testBuildId" -ForegroundColor Gray }
-  if ($testDevId) { Write-Host "  OrangePi ID: $testDevId" -ForegroundColor Gray }
-  if ($testNvrId) { Write-Host "  NVR ID: $testNvrId" -ForegroundColor Gray }
-  Write-Host ""
-}
-
-# ==================== 测试总结 ====================
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "Test Summary" -ForegroundColor Cyan
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "Total:  $TOTAL"
-Write-Host "Passed: $PASSED" -ForegroundColor Green
-Write-Host "Failed: $FAILED" -ForegroundColor Red
-Write-Host ""
-
-if ($FAILED -eq 0) {
-  Write-Host "✅ All tests PASSED!" -ForegroundColor Green
-  exit 0
-}
-else {
-  Write-Host "❌ Some tests FAILED!" -ForegroundColor Red
-  exit 1
-}
+if ($devID) { Test-Endpoint "删除设备" "DELETE" "$BaseUrl/api/device" $authHeaders $delDevBody }
+if ($nvrID) { Test-Endpoint "删除NVR" "DELETE" "$BaseUrl/api/nvr" $authHeaders $delNvrBody }
+if ($buildingId) { Test-Endpoint "删除建筑" "DELETE" "$BaseUrl/api/building" $authHeaders $delBuildBody }
+if ($adminId) { Test-Endpoint "删除管理员" "DELETE" "$BaseUrl/api/admin" $authHeaders $delAdminBody }
 

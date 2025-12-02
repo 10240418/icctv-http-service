@@ -1,2 +1,20 @@
 /.cursor
 /data
+
+# 环境变量文件（包含敏感信息）
+.env
+.env.local
+.env.production.local
+
+# 保留示例文件
+!.env.example
+
+# Docker 镜像文件
+*.tar
+
+# 日志文件
+logs/
+*.log
+
+# SQLite 数据库文件
+*.db

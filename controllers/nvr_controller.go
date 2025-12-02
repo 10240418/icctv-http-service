@@ -13,14 +13,23 @@ import (
 
 	"icctv-http-service/models"
 	"icctv-http-service/services"
+	
+	"gorm.io/gorm"
 )
 
 // NVRControllerInterface 定义NVR接口能力
 type NVRControllerInterface interface {
-	List(w http.ResponseWriter, r *http.Request)   //1.查询NVR列表/详情
-	Create(w http.ResponseWriter, r *http.Request) //2.创建NVR
-	Update(w http.ResponseWriter, r *http.Request) //3.更新NVR
-	Delete(w http.ResponseWriter, r *http.Request) //4.删除NVR
+	List(w http.ResponseWriter, r *http.Request)           //1.查询NVR列表/详情
+	Create(w http.ResponseWriter, r *http.Request)         //2.创建NVR
+	Update(w http.ResponseWriter, r *http.Request)         //3.更新NVR
+	Delete(w http.ResponseWriter, r *http.Request)         //4.删除NVR
+	UpdateRTSPUrls(w http.ResponseWriter, r *http.Request) //6.专门更新RTSP URLs
+	UpdateAdminUser(w http.ResponseWriter, r *http.Request) //7.更新管理员账户
+	UpdateUsers(w http.ResponseWriter, r *http.Request)     //8.更新普通用户列表
+	AddRTSPUrl(w http.ResponseWriter, r *http.Request)      //9.添加RTSP URL
+	RemoveRTSPUrl(w http.ResponseWriter, r *http.Request)   //10.删除RTSP URL
+	AddUser(w http.ResponseWriter, r *http.Request)         //11.添加用户
+	RemoveUser(w http.ResponseWriter, r *http.Request)      //12.删除用户
 }
 
 // NVRController NVR接口
@@ -108,4 +117,175 @@ func (c *NVRController) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondData(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+type updateRTSPUrlsRequest struct {
+	ID       int64               `json:"id"`
+	RTSPUrls []models.ChannelURL `json:"rtsp_urls"`
+}
+
+// 6. UpdateRTSPUrls 专门更新RTSP URLs
+func (c *NVRController) UpdateRTSPUrls(w http.ResponseWriter, r *http.Request) {
+	var req updateRTSPUrlsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ID == 0 {
+		respondError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	result, err := c.service.UpdateRTSPUrls(r.Context(), req.ID, req.RTSPUrls)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondData(w, http.StatusOK, result)
+}
+
+type updateAdminUserRequest struct {
+	ID        int64            `json:"id"`
+	AdminUser models.AdminUser `json:"admin_user"`
+}
+
+// 7. UpdateAdminUser 更新管理员账户
+func (c *NVRController) UpdateAdminUser(w http.ResponseWriter, r *http.Request) {
+	var req updateAdminUserRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ID == 0 {
+		respondError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	result, err := c.service.UpdateAdminUser(r.Context(), req.ID, req.AdminUser)
+	respondResult(w, err, http.StatusOK, result)
+}
+
+type updateUsersRequest struct {
+	ID    int64         `json:"id"`
+	Users []models.User `json:"users"`
+}
+
+// 8. UpdateUsers 更新普通用户列表
+func (c *NVRController) UpdateUsers(w http.ResponseWriter, r *http.Request) {
+	var req updateUsersRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ID == 0 {
+		respondError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	result, err := c.service.UpdateUsers(r.Context(), req.ID, req.Users)
+	respondResult(w, err, http.StatusOK, result)
+}
+
+type addRTSPUrlRequest struct {
+	ID  int64              `json:"id"`
+	URL models.ChannelURL `json:"url"`
+}
+
+// 9. AddRTSPUrl 添加RTSP URL
+func (c *NVRController) AddRTSPUrl(w http.ResponseWriter, r *http.Request) {
+	var req addRTSPUrlRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ID == 0 {
+		respondError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	result, err := c.service.AddRTSPUrl(r.Context(), req.ID, req.URL)
+	if err != nil {
+		if err == gorm.ErrDuplicatedKey {
+			respondError(w, http.StatusConflict, "channel already exists")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondData(w, http.StatusOK, result)
+}
+
+type removeRTSPUrlRequest struct {
+	ID      int64 `json:"id"`
+	Channel int   `json:"channel"`
+}
+
+// 10. RemoveRTSPUrl 删除RTSP URL
+func (c *NVRController) RemoveRTSPUrl(w http.ResponseWriter, r *http.Request) {
+	var req removeRTSPUrlRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ID == 0 {
+		respondError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	result, err := c.service.RemoveRTSPUrl(r.Context(), req.ID, req.Channel)
+	respondResult(w, err, http.StatusOK, result)
+}
+
+type addUserRequest struct {
+	ID   int64       `json:"id"`
+	User models.User `json:"user"`
+}
+
+// 11. AddUser 添加用户
+func (c *NVRController) AddUser(w http.ResponseWriter, r *http.Request) {
+	var req addUserRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ID == 0 {
+		respondError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	result, err := c.service.AddUser(r.Context(), req.ID, req.User)
+	if err != nil {
+		if err == gorm.ErrDuplicatedKey {
+			respondError(w, http.StatusConflict, "user already exists")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondData(w, http.StatusOK, result)
+}
+
+type removeUserRequest struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+}
+
+// 12. RemoveUser 删除用户
+func (c *NVRController) RemoveUser(w http.ResponseWriter, r *http.Request) {
+	var req removeUserRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ID == 0 {
+		respondError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	if req.Username == "" {
+		respondError(w, http.StatusBadRequest, "username is required")
+		return
+	}
+
+	result, err := c.service.RemoveUser(r.Context(), req.ID, req.Username)
+	respondResult(w, err, http.StatusOK, result)
 }

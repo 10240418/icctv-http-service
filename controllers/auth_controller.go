@@ -28,8 +28,8 @@ func NewAuthController(service *services.AuthService) *AuthController {
 }
 
 type publicTokenRequest struct {
-	BuildingID string   `json:"building_id"`
-	Channels   []string `json:"channels"`
+	ISmartID string `json:"ismartid"` // 建筑ISmartID
+	IsStaff  bool   `json:"is_staff"` // 是否为员工
 }
 
 // 1. PublicToken 生成视频访问 Token
@@ -40,25 +40,18 @@ func (c *AuthController) PublicToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.BuildingID == "" {
-		respondError(w, http.StatusBadRequest, "building_id is required")
+	if req.ISmartID == "" {
+		respondError(w, http.StatusBadRequest, "ismartid is required")
 		return
 	}
 
-	if len(req.Channels) == 0 {
-		respondError(w, http.StatusBadRequest, "channels cannot be empty")
-		return
-	}
-
-	token, err := c.service.GenerateVideoToken(r.Context(), req.BuildingID, req.Channels)
+	result, err := c.service.GeneratePublicToken(r.Context(), req.ISmartID, req.IsStaff)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	respondData(w, http.StatusOK, map[string]string{
-		"token": token,
-	})
+	respondData(w, http.StatusOK, result)
 }
 
 type loginRequest struct {

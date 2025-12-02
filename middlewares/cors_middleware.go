@@ -17,7 +17,7 @@ type CORSMiddleware struct {
 func NewCORSMiddleware() *CORSMiddleware {
 	return &CORSMiddleware{
 		allowedOrigins: []string{"*"}, // 允许所有来源，生产环境应指定具体域名
-		allowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		allowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		allowedHeaders: []string{"Content-Type", "Authorization", "X-Requested-With"},
 	}
 }
@@ -81,4 +81,3 @@ func (c *CORSMiddleware) isOriginAllowed(origin string) bool {
 	}
 	return false
 }
-

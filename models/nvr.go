@@ -24,12 +24,12 @@ type NVR struct {
 
 	Name       string       `gorm:"type:varchar(255);not null" json:"name"`           // NVR 名称
 	URL        string       `gorm:"type:varchar(255);not null;column:url" json:"url"` // NVR 访问地址 (IP:Port)
-	BuildingID int64        `gorm:"not null;index" json:"building_id"`                // 关联建筑ID
+	BuildingID int64        `gorm:"default:0;index" json:"building_id"`               // 关联建筑ID (0表示未绑定)
 	AdminUser  AdminUser    `gorm:"type:json;serializer:json" json:"admin_user"`      // 管理员账户(JSON存储)
 	Users      []User       `gorm:"type:json;serializer:json" json:"users"`           // 普通用户列表(JSON存储)
 	RTSPUrls   []ChannelURL `gorm:"type:json;serializer:json" json:"rtsp_urls"`       // RTSP 地址列表(JSON存储)
 	// 关联关系
-	Building Building `gorm:"foreignKey:BuildingID;references:ID" json:"building,omitempty"` // 所属建筑
+	Building *Building `gorm:"foreignKey:BuildingID;references:ID" json:"building,omitempty"` // 所属建筑 (使用指针以支持 NULL)
 }
 
 // TableName 指定表名
