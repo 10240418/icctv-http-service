@@ -33,8 +33,9 @@ func SetupRoutes(mux *http.ServeMux, ctrl ControllerSet, mw MiddlewareSet) {
 	}
 
 	// Auth
-	mux.HandleFunc("POST /api/auth/public", ctrl.Auth.PublicToken) // 生成视频访问 Token
-	mux.HandleFunc("POST /api/auth/login", ctrl.Auth.Login)        // 管理员登录
+	mux.HandleFunc("POST /api/auth/public", ctrl.Auth.PublicToken)       // 生成视频访问 Token (24小时有效)
+	mux.HandleFunc("POST /api/auth/permanent", ctrl.Auth.PermanentToken) // 生成永久视频访问 Token
+	mux.HandleFunc("POST /api/auth/login", ctrl.Auth.Login)              // 管理员登录
 
 	// Admin
 	mux.HandleFunc("GET /api/admin", requireAdmin(ctrl.Admin.List))
@@ -71,7 +72,7 @@ func SetupRoutes(mux *http.ServeMux, ctrl ControllerSet, mw MiddlewareSet) {
 	mux.HandleFunc("POST /api/nvr", requireAdmin(ctrl.NVR.Create))
 	mux.HandleFunc("PUT /api/nvr", requireAdmin(ctrl.NVR.Update))
 	mux.HandleFunc("DELETE /api/nvr", requireAdmin(ctrl.NVR.Delete))
-	
+
 	// NVR 细粒度管理接口
 	mux.HandleFunc("PUT /api/nvr/admin-user", requireAdmin(ctrl.NVR.UpdateAdminUser))
 	mux.HandleFunc("PUT /api/nvr/users", requireAdmin(ctrl.NVR.UpdateUsers))

@@ -13,8 +13,9 @@ import (
 
 // AuthControllerInterface 定义认证接口能力
 type AuthControllerInterface interface {
-	PublicToken(w http.ResponseWriter, r *http.Request) //1.公开 Token
-	Login(w http.ResponseWriter, r *http.Request)       //2.管理员登录
+	PublicToken(w http.ResponseWriter, r *http.Request)    //1.公开 Token (24小时有效)
+	PermanentToken(w http.ResponseWriter, r *http.Request) //2.永久 Token
+	Login(w http.ResponseWriter, r *http.Request)          //3.管理员登录
 }
 
 // AuthController 认证接口
@@ -54,12 +55,34 @@ func (c *AuthController) PublicToken(w http.ResponseWriter, r *http.Request) {
 	respondData(w, http.StatusOK, result)
 }
 
+// 2. PermanentToken 生成永久视频访问 Token
+func (c *AuthController) PermanentToken(w http.ResponseWriter, r *http.Request) {
+	var req publicTokenRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.ISmartID == "" {
+		respondError(w, http.StatusBadRequest, "ismartid is required")
+		return
+	}
+
+	result, err := c.service.GeneratePermanentToken(r.Context(), req.ISmartID, req.IsStaff)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	respondData(w, http.StatusOK, result)
+}
+
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
-// 2. Login 管理员登录，返回 JWT
+// 3. Login 管理员登录，返回 JWT
 func (c *AuthController) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {

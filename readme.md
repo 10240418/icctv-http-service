@@ -4,44 +4,52 @@
 
 | 编号 | 接口 | 方法 | 简介/功能 | 权限 |
 | --- | --- | --- | --- | --- |
-| 1 | /api/auth/public | POST | 获取公开Token | 无 |
-| 2 | /api/auth/login | POST | 管理员登录 | 无 |
-| 3 | /api/admin | GET | 查询管理员列表 | 管理员 |
-| 4 | /api/admin | POST | 创建管理员 | 管理员 |
-| 5 | /api/admin | PUT | 更新管理员 | 管理员 |
-| 6 | /api/admin | DELETE | 删除管理员 | 管理员 |
-| 7 | /api/building | GET | 查询建筑列表 | 管理员 |
-| 8 | /api/building | POST | 创建建筑信息 | 管理员 |
-| 9 | /api/building | PUT | 更新建筑信息 | 管理员 |
-| 10 | /api/building | DELETE | 删除建筑信息 | 管理员 |
-| 11 | /api/device | GET | 查询OrangePi设备 | 管理员 |
-| 12 | /api/device | POST | 创建OrangePi设备 | 管理员 |
-| 13 | /api/device | PUT | 更新OrangePi设备 | 管理员 |
-| 14 | /api/device | DELETE | 删除OrangePi设备 | 管理员 |
+| 1 | /api/auth/public | POST | 获取公开Token(24小时有效) | 无 |
+| 2 | /api/auth/permanent | POST | 获取永久Token | 无 |
+| 3 | /api/auth/login | POST | 管理员登录 | 无 |
 
-| 15 | /api/orangepi/remote/ports | POST | 远程端口更新 | 管理员 |
-| 16 | /api/orangepi/remote/info | GET | 查询远程设备信息 | 管理员 |
-| 17 | /api/orangepi/remote/health | GET | 远程健康检查 | 管理员 |
+| 4 | /api/admin | GET | 查询管理员列表 | 管理员 |
+| 5 | /api/admin | POST | 创建管理员 | 管理员 |
+| 6 | /api/admin | PUT | 更新管理员 | 管理员 |
+| 7 | /api/admin | DELETE | 删除管理员 | 管理员 |
 
-| 18 | /api/nvr | GET | 查询NVR列表 | 管理员 |
-| 19 | /api/nvr | POST | 创建NVR信息 | 管理员 |
-| 20 | /api/nvr | PUT | 更新NVR信息 | 管理员 |
-| 21 | /api/nvr | DELETE | 删除NVR信息 | 管理员 |
-| 22 | /api/bind/building-orangepi | POST | 绑定OrangePi到建筑 | 管理员 |
-| 23 | /api/bind/building-orangepi | DELETE | 解绑OrangePi | 管理员 |
-| 24 | /api/bind/building-orangepi/{building_id} | GET | 获取建筑关联的OrangePi | 管理员 |
-| 25 | /api/bind/building-nvr | POST | 绑定NVR到建筑 | 管理员 |
-| 26 | /api/bind/building-nvr | DELETE | 解绑NVR | 管理员 |
-| 27 | /api/bind/building-nvr/{building_id} | GET | 获取建筑关联的NVR | 管理员 |
-| 28 | /api/device/info | GET | 设备汇总信息 | 管理员 |
-| 29 | /api/publicnet/config | GET | 获取公网配置 | 管理员 |
-| 30 | /api/publicnet/config | PUT | 修改公网配置 | 管理员 |
+| 8 | /api/building | GET | 查询建筑列表 | 管理员 |
+| 9 | /api/building | POST | 创建建筑信息 | 管理员 |
+| 10 | /api/building | PUT | 更新建筑信息 | 管理员 |
+| 11 | /api/building | DELETE | 删除建筑信息 | 管理员 |
+
+| 12 | /api/device | GET | 查询OrangePi设备 | 管理员 |
+| 13 | /api/device | POST | 创建OrangePi设备 | 管理员 |
+| 14 | /api/device | PUT | 更新OrangePi设备 | 管理员 |
+| 15 | /api/device | DELETE | 删除OrangePi设备 | 管理员 |
+
+| 16 | /api/orangepi/remote/ports | POST | 远程端口更新 | 管理员 |
+| 17 | /api/orangepi/remote/info | GET | 查询远程设备信息 | 管理员 |
+| 18 | /api/orangepi/remote/health | GET | 远程健康检查 | 管理员 |
+
+| 19 | /api/nvr | GET | 查询NVR列表 | 管理员 |
+| 20 | /api/nvr | POST | 创建NVR信息 | 管理员 |
+| 21 | /api/nvr | PUT | 更新NVR信息 | 管理员 |
+| 22 | /api/nvr | DELETE | 删除NVR信息 | 管理员 |
+
+| 23 | /api/bind/building-orangepi | POST | 绑定OrangePi到建筑 | 管理员 |
+| 24 | /api/bind/building-orangepi | DELETE | 解绑OrangePi | 管理员 |
+| 25 | /api/bind/building-orangepi/{building_id} | GET | 获取建筑关联的OrangePi | 管理员 |
+
+| 26 | /api/bind/building-nvr | POST | 绑定NVR到建筑 | 管理员 |
+| 27 | /api/bind/building-nvr | DELETE | 解绑NVR | 管理员 |
+| 28 | /api/bind/building-nvr/{building_id} | GET | 获取建筑关联的NVR | 管理员 |
+
+| 29 | /api/device/info | GET | 设备汇总信息 | 管理员 |
+| 30 | /api/publicnet/config | GET | 获取公网配置 | 管理员 |
+| 31 | /api/publicnet/config | PUT | 修改公网配置 | 管理员 |
 
 ---
 
 ## 详细接口参数/响应/脚本
 
 ### 1. /api/auth/public [POST]
+- **简介**: 获取公开Token，有效期24小时
 - **请求参数**
 ```json
 {
@@ -58,13 +66,47 @@
 ```
 - **Powershell测试**
 ```powershell
-$body = @{building_id='0314100';channels=@('1')}|ConvertTo-Json
+$body = @{ismartid='0314100';is_staff=$false}|ConvertTo-Json
 Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/auth/public" -Method POST -Body $body -ContentType "application/json"
 ```
 
 ---
 
-### 2. /api/auth/login [POST]
+### 2. /api/auth/permanent [POST]
+- **简介**: 获取永久Token，永不过期
+- **请求参数**
+```json
+{
+  "ismartid": "string", // 必填，建筑ISmartID
+  "is_staff": false     // 可选，是否员工(员工可访问所有频道)
+}
+```
+- **响应参数**
+```json
+{
+  "success": true,
+  "data": {
+    "orangepis": [
+      {
+        "orangepi_id": 1,
+        "orangepi_name": "设备名称",
+        "is_active": true,
+        "token": "永久有效的token字符串",
+        "urls": ["http://公网IP:端口/channel1?token=xxx"]
+      }
+    ]
+  }
+}
+```
+- **Powershell测试**
+```powershell
+$body = @{ismartid='0314100';is_staff=$false}|ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/auth/permanent" -Method POST -Body $body -ContentType "application/json"
+```
+
+---
+
+### 3. /api/auth/login [POST]
 - **请求参数**
 ```json
 {
@@ -87,7 +129,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/auth/login" -Method POST -Body
 
 ---
 
-### 3. /api/admin [GET]
+### 4. /api/admin [GET]
 - **请求参数**（示例。如果无查询参数可省略）
 ```json
 {
@@ -109,7 +151,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/admin?id=1" -Headers $headers
 
 ---
 
-### 4. /api/admin [POST]
+### 5. /api/admin [POST]
 - **请求参数**
 ```json
 {
@@ -133,7 +175,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/admin" -Method POST -Headers $
 
 ---
 
-### 5. /api/admin [PUT]
+### 6. /api/admin [PUT]
 - **请求参数**
 ```json
 {
@@ -158,7 +200,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/admin" -Method PUT -Headers $h
 
 ---
 
-### 6. /api/admin [DELETE]
+### 7. /api/admin [DELETE]
 - **请求参数**
 ```json
 {
@@ -181,7 +223,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/admin" -Method DELETE -Headers
 
 ---
 
-### 7. /api/building [GET]
+### 8. /api/building [GET]
 - **请求参数**（示例。如果无查询参数可省略）
 ```json
 {
@@ -203,7 +245,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/building?id=1" -Headers $heade
 
 ---
 
-### 8. /api/building [POST]
+### 9. /api/building [POST]
 - **请求参数**
 ```json
 {
@@ -228,7 +270,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/building" -Method POST -Header
 
 ---
 
-### 9. /api/building [PUT]
+### 10. /api/building [PUT]
 - **请求参数**
 ```json
 {
@@ -254,7 +296,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/building?id=1" -Method PUT -He
 
 ---
 
-### 10. /api/building [DELETE]
+### 11. /api/building [DELETE]
 - **请求参数**
 ```json
 {
@@ -277,7 +319,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/building" -Method DELETE -Head
 
 ---
 
-### 11. /api/device [GET]
+### 12. /api/device [GET]
 - **请求参数**（示例。如果无查询参数可省略）
 ```json
 {
@@ -299,7 +341,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/device?ismartid=ismart_001" -H
 
 ---
 
-### 12. /api/device [POST]
+### 13. /api/device [POST]
 - **请求参数**
 ```json
 {
@@ -326,7 +368,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/device" -Method POST -Headers 
 
 ---
 
-### 13. /api/device [PUT]
+### 14. /api/device [PUT]
 - **请求参数**
 ```json
 {
@@ -354,7 +396,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/device?id=1" -Method PUT -Head
 
 ---
 
-### 14. /api/device [DELETE]
+### 15. /api/device [DELETE]
 - **请求参数**
 ```json
 {
@@ -377,7 +419,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/device" -Method DELETE -Header
 
 ---
 
-### 15. /api/orangepi/remote/ports [POST]
+### 16. /api/orangepi/remote/ports [POST]
 - **请求参数**
 ```json
 {
@@ -402,7 +444,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/orangepi/remote/ports" -Method
 
 ---
 
-### 16. /api/orangepi/remote/info [GET]
+### 17. /api/orangepi/remote/info [GET]
 - **请求参数**
 ```json
 {
@@ -424,7 +466,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/orangepi/remote/info?id=1" -He
 
 ---
 
-### 17. /api/orangepi/remote/health [GET]
+### 18. /api/orangepi/remote/health [GET]
 - **请求参数**
 ```json
 {
@@ -446,7 +488,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/orangepi/remote/health?id=1" -
 
 ---
 
-### 18. /api/nvr [GET]
+### 19. /api/nvr [GET]
 - **请求参数**（示例。如果无查询参数可省略）
 ```json
 {
@@ -468,7 +510,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/nvr?id=1" -Headers $headers
 
 ---
 
-### 19. /api/nvr [POST]
+### 20. /api/nvr [POST]
 - **请求参数**
 ```json
 {
@@ -496,7 +538,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/nvr" -Method POST -Headers $he
 
 ---
 
-### 20. /api/nvr [PUT]
+### 21. /api/nvr [PUT]
 - **请求参数**
 ```json
 {
@@ -525,7 +567,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/nvr?id=1" -Method PUT -Headers
 
 ---
 
-### 21. /api/nvr [DELETE]
+### 22. /api/nvr [DELETE]
 - **请求参数**
 ```json
 {
@@ -548,7 +590,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/nvr" -Method DELETE -Headers $
 
 ---
 
-### 22. /api/bind/building-orangepi [POST]
+### 23. /api/bind/building-orangepi [POST]
 ```json
 {
   "building_id": $buildingId, // 必填
@@ -566,7 +608,7 @@ $body = @{building_id=$buildingId; orangepi_id=$devID}|ConvertTo-Json
 Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/bind/building-orangepi" -Method POST -Headers $headers -Body $body
 ```
 
-### 23. /api/bind/building-orangepi [DELETE]
+### 24. /api/bind/building-orangepi [DELETE]
 ```json
 {
   "orangepi_id": $devID // 必填
@@ -583,7 +625,7 @@ $body=@{orangepi_id=$devID}|ConvertTo-Json
 Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/bind/building-orangepi" -Method DELETE -Headers $headers -Body $body
 ```
 
-### 24. /api/bind/building-orangepi/{building_id} [GET]
+### 25. /api/bind/building-orangepi/{building_id} [GET]
 - **无Body参数**
 - **响应**
 ```json
@@ -595,7 +637,7 @@ $headers=@{"Authorization"="Bearer $token"}
 Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/bind/building-orangepi/$buildingId" -Headers $headers
 ```
 
-### 25. /api/bind/building-nvr [POST]
+### 26. /api/bind/building-nvr [POST]
 ```json
 {
   "building_id": $buildingId, // 必填
@@ -613,7 +655,7 @@ $body = @{building_id=$buildingId; nvr_id=$nvrID}|ConvertTo-Json
 Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/bind/building-nvr" -Method POST -Headers $headers -Body $body
 ```
 
-### 26. /api/bind/building-nvr [DELETE]
+### 27. /api/bind/building-nvr [DELETE]
 ```json
 {
   "nvr_id": $nvrID // 必填
@@ -630,7 +672,7 @@ $body=@{nvr_id=$nvrID}|ConvertTo-Json
 Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/bind/building-nvr" -Method DELETE -Headers $headers -Body $body
 ```
 
-### 27. /api/bind/building-nvr/{building_id} [GET]
+### 28. /api/bind/building-nvr/{building_id} [GET]
 - **无Body参数**
 - **响应**
 ```json
@@ -642,7 +684,7 @@ $headers=@{"Authorization"="Bearer $token"}
 Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/bind/building-nvr/$buildingId" -Headers $headers
 ```
 
-### 28. /api/device/info [GET]
+### 29. /api/device/info [GET]
 - **请求参数**
 ```json
 {
@@ -664,7 +706,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8080/api/device/info?id=1" -Headers $he
 
 ---
 
-### 29. /api/publicnet/config [GET]
+### 30. /api/publicnet/config [GET]
 - **请求参数**
 ```json
 {
@@ -696,7 +738,7 @@ Invoke-RestMethod -Uri "http://192.168.10.10:8080/api/publicnet/config" -Method 
 
 ---
 
-### 30. /api/publicnet/config [PUT]
+### 31. /api/publicnet/config [PUT]
 - **请求参数**
 ```json
 {

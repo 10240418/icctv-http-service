@@ -26,9 +26,10 @@ import (
 
 // AuthServiceInterface 定义认证业务能力
 type AuthServiceInterface interface {
-	GeneratePublicToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error) //1.生成公开访问Token
-	Login(ctx context.Context, username, password string) (*AuthToken, error)                             //2.校验账号密码并签发JWT
-	ValidateToken(tokenStr string) (*AdminClaims, error)                                                  //3.验证JWT并返回Claims
+	GeneratePublicToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error)    //1.生成公开访问Token(24小时有效)
+	GeneratePermanentToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error) //2.生成永久访问Token
+	Login(ctx context.Context, username, password string) (*AuthToken, error)                                //3.校验账号密码并签发JWT
+	ValidateToken(tokenStr string) (*AdminClaims, error)                                                     //4.验证JWT并返回Claims
 }
 
 // AuthService 认证相关逻辑
@@ -68,13 +69,14 @@ type VideoTokenPayload struct {
 type OrangePiURLs struct {
 	OrangePiID   int64    `json:"orangepi_id"`
 	OrangePiName string   `json:"orangepi_name"`
+	IsActive     bool     `json:"is_active"`
+	Token        string   `json:"token"`
 	URLs         []string `json:"urls"`
 }
 
 // PublicTokenResponse 公开Token响应
 type PublicTokenResponse struct {
-	Token      string         `json:"token"`
-	OrangePis  []OrangePiURLs `json:"orangepis"`
+	OrangePis []OrangePiURLs `json:"orangepis"`
 }
 
 // 0. NewAuthService 构造函数，加载基础配置
@@ -92,7 +94,7 @@ func NewAuthService(db *gorm.DB, adminService *AdminService, orangePiService *Or
 	}
 
 	// 读取JWT TTL
-	ttlMinutes := 120
+	ttlMinutes := 1440 // 24小时
 	if val := os.Getenv("JWT_TTL_MINUTES"); val != "" {
 		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
 			ttlMinutes = parsed
@@ -113,8 +115,10 @@ func NewAuthService(db *gorm.DB, adminService *AdminService, orangePiService *Or
 // 1. GeneratePublicToken 生成公开访问 Token 和 URLs
 // 参数：ismartID - 建筑ISmartID, isStaff - 是否员工
 // 逻辑：
-//   - is_staff=true: 返回该建筑下所有OrangePi的AllChannels（如果存在）或UserChannels中的channels
-//   - is_staff=false: 只返回每个OrangePi的UserChannels中指定的channels
+//   - 每个 OrangePi 独立生成 Token
+//   - is_staff=true: 返回该 OrangePi 的 AllChannels（如果存在）或 UserChannels
+//   - is_staff=false: 只返回该 OrangePi 的 UserChannels
+//   - 无论 is_active 状态如何，都会返回 OrangePi 信息和 URLs
 func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error) {
 	// 检查建筑是否存在
 	var building models.Building
@@ -122,14 +126,14 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 		return nil, fmt.Errorf("building not found: %s", ismartID)
 	}
 
-	// 获取该建筑关联的所有 OrangePi 设备
+	// 获取该建筑关联的所有 OrangePi 设备（包括非活跃的）
 	var orangePis []models.OrangePi
-	if err := s.db.WithContext(ctx).Where("ismart_id = ? AND is_active = ?", ismartID, true).Find(&orangePis).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("ismart_id = ?", ismartID).Find(&orangePis).Error; err != nil {
 		return nil, fmt.Errorf("failed to query orangepi devices: %w", err)
 	}
 
 	if len(orangePis) == 0 {
-		return nil, fmt.Errorf("no active orangepi devices found for building: %s", ismartID)
+		return nil, fmt.Errorf("no orangepi devices found for building: %s", ismartID)
 	}
 
 	// 获取公网配置
@@ -138,116 +142,169 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 		return nil, fmt.Errorf("public network configuration not found")
 	}
 
-	// 收集所有可访问的 channels（用于生成 token）
-	var allChannels []string
-	channelSet := make(map[string]bool) // 去重
-
-	// 按 OrangePi 分组构建 URL 列表
+	// 按 OrangePi 分组构建结果列表
 	orangePiURLsList := make([]OrangePiURLs, 0)
 
 	for _, opi := range orangePis {
-		orangePiURLs := OrangePiURLs{
-			OrangePiID:   opi.ID,
-			OrangePiName: opi.Name,
-			URLs:         make([]string, 0),
-		}
-
-		// 确定该 OrangePi 下哪些 channels 可访问
-		accessibleChannels := make(map[int]bool)
-
+		// 确定该 OrangePi 可访问的 channels
+		var channelsToUse []int
 		if isStaff {
 			// 员工模式：优先使用 AllChannels，如果为空则使用 UserChannels
-			channelsToUse := opi.AllChannels
+			channelsToUse = opi.AllChannels
 			if len(channelsToUse) == 0 {
 				channelsToUse = opi.UserChannels
 			}
-			// 如果仍然为空，跳过这个 OrangePi
-			if len(channelsToUse) == 0 {
-				continue
-			}
-			for _, ch := range channelsToUse {
-				accessibleChannels[ch] = true
-				channelName := fmt.Sprintf("channel%d", ch)
-				if !channelSet[channelName] {
-					channelSet[channelName] = true
-					allChannels = append(allChannels, channelName)
-				}
-			}
 		} else {
-			// 普通用户模式：只能访问 UserChannels 中指定的 channels
-			// 如果 UserChannels 为空，跳过这个 OrangePi
-			if len(opi.UserChannels) == 0 {
-				continue
-			}
-			for _, ch := range opi.UserChannels {
-				accessibleChannels[ch] = true
-				channelName := fmt.Sprintf("channel%d", ch)
-				if !channelSet[channelName] {
-					channelSet[channelName] = true
-					allChannels = append(allChannels, channelName)
-				}
-			}
+			// 普通用户模式：只能访问 UserChannels
+			channelsToUse = opi.UserChannels
 		}
 
-		// 如果该 OrangePi 有可访问的 channels，则生成 token（稍后统一生成）
-		// 先构建该 OrangePi 的 URL 列表（使用占位符）
-		for ch := range accessibleChannels {
-			// 暂时不添加 token，等统一生成后再添加
-			orangePiURLs.URLs = append(orangePiURLs.URLs, fmt.Sprintf("%d", ch))
+		// 构建 channel 名称列表（用于生成 token）
+		channelNames := make([]string, 0, len(channelsToUse))
+		for _, ch := range channelsToUse {
+			channelNames = append(channelNames, fmt.Sprintf("channel%d", ch))
 		}
 
-		// 只添加有可访问 channels 的 OrangePi
-		if len(orangePiURLs.URLs) > 0 {
-			orangePiURLsList = append(orangePiURLsList, orangePiURLs)
+		// 为该 OrangePi 生成独立的 Token
+		var token string
+		var err error
+		if len(channelNames) == 0 {
+			// 如果没有 channels，生成一个空 channels 的 token
+			token, err = s.generateHMACToken(ismartID, []string{}, isStaff)
+		} else {
+			token, err = s.generateHMACToken(ismartID, channelNames, isStaff)
 		}
-	}
-
-	if len(allChannels) == 0 {
-		return nil, fmt.Errorf("no accessible channels found")
-	}
-
-	// 生成视频 Token (HMAC-SHA256 签名格式)
-	token, err := s.generateHMACToken(ismartID, allChannels, isStaff)
-	if err != nil {
-		return nil, err
-	}
-
-	// 现在用真实的 URL 替换占位符
-	for i := range orangePiURLsList {
-		// 根据 OrangePiID 找到对应的 OrangePi
-		var currentOpi models.OrangePi
-		for _, opi := range orangePis {
-			if opi.ID == orangePiURLsList[i].OrangePiID {
-				currentOpi = opi
-				break
-			}
+		if err != nil {
+			return nil, err
 		}
 
-		realURLs := make([]string, 0)
-		for _, channelStr := range orangePiURLsList[i].URLs {
-			// channelStr 是 channel 号（如 "1", "2"）
-			url := fmt.Sprintf("http://%s:%d/channel%s?token=%s",
+		// 构建 URLs
+		urls := make([]string, 0, len(channelsToUse))
+		for _, ch := range channelsToUse {
+			url := fmt.Sprintf("http://%s:%d/channel%d?token=%s",
 				publicNetConfig.ExternalIP,
-				currentOpi.ICCTVAuthServiceRemotePort,
-				channelStr,
+				opi.ICCTVAuthServiceRemotePort,
+				ch,
 				token)
-			realURLs = append(realURLs, url)
+			urls = append(urls, url)
 		}
-		orangePiURLsList[i].URLs = realURLs
+
+		orangePiURLs := OrangePiURLs{
+			OrangePiID:   opi.ID,
+			OrangePiName: opi.Name,
+			IsActive:     opi.IsActive,
+			Token:        token,
+			URLs:         urls,
+		}
+
+		orangePiURLsList = append(orangePiURLsList, orangePiURLs)
 	}
 
 	return &PublicTokenResponse{
-		Token:     token,
 		OrangePis: orangePiURLsList,
 	}, nil
 }
 
-// generateHMACToken 生成 HMAC-SHA256 签名的视频 Token
+// GeneratePermanentToken 生成永久访问 Token 和 URLs
+// 与 GeneratePublicToken 逻辑相同，但 Token 永不过期
+func (s *AuthService) GeneratePermanentToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error) {
+	// 检查建筑是否存在
+	var building models.Building
+	if err := s.db.WithContext(ctx).Where("ismart_id = ?", ismartID).First(&building).Error; err != nil {
+		return nil, fmt.Errorf("building not found: %s", ismartID)
+	}
+
+	// 获取该建筑关联的所有 OrangePi 设备
+	var orangePis []models.OrangePi
+	if err := s.db.WithContext(ctx).Where("ismart_id = ?", ismartID).Find(&orangePis).Error; err != nil {
+		return nil, fmt.Errorf("failed to query orangepi devices: %w", err)
+	}
+
+	if len(orangePis) == 0 {
+		return nil, fmt.Errorf("no orangepi devices found for building: %s", ismartID)
+	}
+
+	// 获取公网配置
+	var publicNetConfig models.PublicNetConfig
+	if err := s.db.WithContext(ctx).First(&publicNetConfig).Error; err != nil {
+		return nil, fmt.Errorf("public network configuration not found")
+	}
+
+	// 按 OrangePi 分组构建结果列表
+	orangePiURLsList := make([]OrangePiURLs, 0)
+
+	for _, opi := range orangePis {
+		var channelsToUse []int
+		if isStaff {
+			channelsToUse = opi.AllChannels
+			if len(channelsToUse) == 0 {
+				channelsToUse = opi.UserChannels
+			}
+		} else {
+			channelsToUse = opi.UserChannels
+		}
+
+		channelNames := make([]string, 0, len(channelsToUse))
+		for _, ch := range channelsToUse {
+			channelNames = append(channelNames, fmt.Sprintf("channel%d", ch))
+		}
+
+		// 生成永久 Token（expiry = 0 表示永不过期）
+		var token string
+		var err error
+		if len(channelNames) == 0 {
+			token, err = s.generateHMACTokenWithExpiry(ismartID, []string{}, isStaff, 0)
+		} else {
+			token, err = s.generateHMACTokenWithExpiry(ismartID, channelNames, isStaff, 0)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		urls := make([]string, 0, len(channelsToUse))
+		for _, ch := range channelsToUse {
+			url := fmt.Sprintf("http://%s:%d/channel%d?token=%s",
+				publicNetConfig.ExternalIP,
+				opi.ICCTVAuthServiceRemotePort,
+				ch,
+				token)
+			urls = append(urls, url)
+		}
+
+		orangePiURLs := OrangePiURLs{
+			OrangePiID:   opi.ID,
+			OrangePiName: opi.Name,
+			IsActive:     opi.IsActive,
+			Token:        token,
+			URLs:         urls,
+		}
+
+		orangePiURLsList = append(orangePiURLsList, orangePiURLs)
+	}
+
+	return &PublicTokenResponse{
+		OrangePis: orangePiURLsList,
+	}, nil
+}
+
+// generateHMACToken 生成 HMAC-SHA256 签名的视频 Token（24小时有效）
 // 格式：base64(payload).signature
 func (s *AuthService) generateHMACToken(buildingID string, channels []string, isStaff bool) (string, error) {
+	return s.generateHMACTokenWithExpiry(buildingID, channels, isStaff, 86400)
+}
+
+// generateHMACTokenWithExpiry 生成 HMAC-SHA256 签名的视频 Token（可指定过期时间）
+// expiry: 过期秒数，0 表示永不过期
+func (s *AuthService) generateHMACTokenWithExpiry(buildingID string, channels []string, isStaff bool, expirySeconds int64) (string, error) {
 	// 创建 Payload
 	now := time.Now().Unix()
-	expiry := now + 86400 // 24小时有效期
+	var expiry int64
+	if expirySeconds > 0 {
+		expiry = now + expirySeconds
+	} else {
+		// 永不过期：设置为 100 年后
+		expiry = now + 100*365*24*3600
+	}
 
 	payload := VideoTokenPayload{
 		Channels:   channels,

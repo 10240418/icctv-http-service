@@ -23,19 +23,19 @@ import (
 
 // OrangePiServiceInterface 定义设备业务能力
 type OrangePiServiceInterface interface {
-	List(ctx context.Context, ismartId string) ([]models.OrangePi, error)                                              //1.查询设备
-	Create(ctx context.Context, payload models.OrangePi) (*models.OrangePi, error)                                     //2.创建设备
-	Update(ctx context.Context, id int64, payload models.OrangePi) (*models.OrangePi, error)                           //3.更新设备
-	Delete(ctx context.Context, id int64) error                                                                        //4.删除设备
-	RemoteUpdatePorts(ctx context.Context, id int64, sshPort int, authPort int) (*RemoteUpdateResult, error)           //5.远程更新端口
-	RemoteGetInfo(ctx context.Context, id int64, token string) (*RemoteDeviceInfo, error)                              //6.远程获取设备信息
-	RemoteHealthCheck(ctx context.Context, id int64) (*RemoteHealthStatus, error)                                      //7.远程健康检查
+	List(ctx context.Context, ismartId string) ([]models.OrangePi, error)                                    //1.查询设备
+	Create(ctx context.Context, payload models.OrangePi) (*models.OrangePi, error)                           //2.创建设备
+	Update(ctx context.Context, id int64, payload models.OrangePi) (*models.OrangePi, error)                 //3.更新设备
+	Delete(ctx context.Context, id int64) error                                                              //4.删除设备
+	RemoteUpdatePorts(ctx context.Context, id int64, sshPort int, authPort int) (*RemoteUpdateResult, error) //5.远程更新端口
+	RemoteGetInfo(ctx context.Context, id int64, token string) (*RemoteDeviceInfo, error)                    //6.远程获取设备信息
+	RemoteHealthCheck(ctx context.Context, id int64) (*RemoteHealthStatus, error)                            //7.远程健康检查
 	// MediaMTX 远程管理
-	RemoteListMediaMTXPaths(ctx context.Context, id int64, token string, page int, itemsPerPage int) (*MediaMTXPathsListResponse, error) //9.远程列出paths
-	RemoteGetMediaMTXPath(ctx context.Context, id int64, token string, name string) (*MediaMTXPathDetailResponse, error)                  //10.远程查询单个path
-	RemoteAddMediaMTXPath(ctx context.Context, id int64, token string, name string, config map[string]interface{}) (*MediaMTXPathActionResponse, error)     //11.远程新增path
-	RemoteUpdateMediaMTXPath(ctx context.Context, id int64, token string, name string, config map[string]interface{}) (*MediaMTXPathActionResponse, error)  //12.远程更新path
-	RemoteDeleteMediaMTXPath(ctx context.Context, id int64, token string, name string) (*MediaMTXPathActionResponse, error)                                 //13.远程删除path
+	RemoteListMediaMTXPaths(ctx context.Context, id int64, token string, page int, itemsPerPage int) (*MediaMTXPathsListResponse, error)                   //9.远程列出paths
+	RemoteGetMediaMTXPath(ctx context.Context, id int64, token string, name string) (*MediaMTXPathDetailResponse, error)                                   //10.远程查询单个path
+	RemoteAddMediaMTXPath(ctx context.Context, id int64, token string, name string, config map[string]interface{}) (*MediaMTXPathActionResponse, error)    //11.远程新增path
+	RemoteUpdateMediaMTXPath(ctx context.Context, id int64, token string, name string, config map[string]interface{}) (*MediaMTXPathActionResponse, error) //12.远程更新path
+	RemoteDeleteMediaMTXPath(ctx context.Context, id int64, token string, name string) (*MediaMTXPathActionResponse, error)                                //13.远程删除path
 }
 
 // RemoteUpdateResult 远程更新结果
@@ -65,6 +65,9 @@ type RemoteHealthStatus struct {
 	DockerServices map[string]bool `json:"docker_services"`
 	MediaMTXStatus string          `json:"mediamtx_status"`
 	FRPCStatus     string          `json:"frpc_status"`
+	// 新增字段：设备活跃状态是否被更新
+	IsActiveUpdated bool `json:"is_active_updated,omitempty"`
+	NewIsActive     bool `json:"new_is_active,omitempty"`
 }
 
 // MediaMTXPathItem MediaMTX path 项
@@ -91,16 +94,22 @@ type MediaMTXPathDetailResponse struct {
 
 // MediaMTXPathActionResponse MediaMTX path 操作响应
 type MediaMTXPathActionResponse struct {
-	Action            string      `json:"action"`
-	Name              string      `json:"name"`
-	StatusCode        int         `json:"status_code"`
-	MediaMTXResponse  interface{} `json:"mediamtx_response"`
+	Action           string      `json:"action"`
+	Name             string      `json:"name"`
+	StatusCode       int         `json:"status_code"`
+	MediaMTXResponse interface{} `json:"mediamtx_response"`
 }
+
+// TokenGeneratorFunc 定义生成 Token 的函数类型
+// 参数: ismartID, isStaff
+// 返回: token 字符串
+type TokenGeneratorFunc func(ctx context.Context, ismartID string, isStaff bool) (string, error)
 
 // OrangePiService 设备业务逻辑
 type OrangePiService struct {
-	db               *gorm.DB
-	publicNetService *PublicNetService
+	db                 *gorm.DB
+	publicNetService   *PublicNetService
+	generateStaffToken TokenGeneratorFunc
 }
 
 // 0. NewOrangePiService 构造函数
@@ -109,6 +118,11 @@ func NewOrangePiService(db *gorm.DB, publicNetService *PublicNetService) *Orange
 		db:               db,
 		publicNetService: publicNetService,
 	}
+}
+
+// SetTokenGenerator 设置 Token 生成器（用于避免循环依赖）
+func (s *OrangePiService) SetTokenGenerator(fn TokenGeneratorFunc) {
+	s.generateStaffToken = fn
 }
 
 // 1. List 查询设备列表
@@ -134,7 +148,7 @@ func (s *OrangePiService) Create(ctx context.Context, payload models.OrangePi) (
 	if payload.AllChannels == nil {
 		payload.AllChannels = []int{}
 	}
-	
+
 	if err := s.db.WithContext(ctx).Create(&payload).Error; err != nil {
 		return nil, err
 	}
@@ -184,6 +198,27 @@ func (s *OrangePiService) Delete(ctx context.Context, id int64) error {
 
 // 5. RemoteUpdatePorts 远程更新端口
 func (s *OrangePiService) RemoteUpdatePorts(ctx context.Context, id int64, sshPort int, authPort int) (*RemoteUpdateResult, error) {
+	// 0. 校验端口是否相同
+	if sshPort == authPort {
+		return nil, errors.New("ssh_remote_port and icctv_auth_service_remote_port cannot be the same")
+	}
+
+	// 1. 校验端口是否已被其他设备占用
+	var count int64
+	err := s.db.WithContext(ctx).Model(&models.OrangePi{}).
+		Where("id <> ?", id). // 排除当前设备
+		Where("(ssh_remote_port = ? OR icctv_auth_service_remote_port = ? OR ssh_remote_port = ? OR icctv_auth_service_remote_port = ?)",
+			sshPort, sshPort, authPort, authPort).
+		Count(&count).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to check port availability: %w", err)
+	}
+
+	if count > 0 {
+		return nil, errors.New("one or both ports are already in use by another device")
+	}
+
 	// 获取设备信息
 	var device models.OrangePi
 	if err := s.db.WithContext(ctx).First(&device, id).Error; err != nil {
@@ -196,9 +231,18 @@ func (s *OrangePiService) RemoteUpdatePorts(ctx context.Context, id int64, sshPo
 		return nil, errors.New("public network configuration not found")
 	}
 
-	// 构建远程URL
-	remoteURL := fmt.Sprintf("http://%s:%d/api/device/frpc/ports",
-		publicNetConfig.ExternalIP, device.ICCTVAuthServiceRemotePort)
+	// 生成 staff token（需要 is_staff=true 权限才能修改端口）
+	if s.generateStaffToken == nil {
+		return nil, errors.New("token generator not configured")
+	}
+	token, err := s.generateStaffToken(ctx, device.ISmartID, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate staff token: %w", err)
+	}
+
+	// 构建远程URL（携带 token）
+	remoteURL := fmt.Sprintf("http://%s:%d/api/device/frpc/ports?token=%s",
+		publicNetConfig.ExternalIP, device.ICCTVAuthServiceRemotePort, token)
 
 	// 构建请求体
 	requestBody := map[string]int{
@@ -271,6 +315,7 @@ func (s *OrangePiService) RemoteGetInfo(ctx context.Context, id int64, token str
 }
 
 // 7. RemoteHealthCheck 远程健康检查
+// 如果健康检查失败，会自动更新数据库中的 is_active 状态
 func (s *OrangePiService) RemoteHealthCheck(ctx context.Context, id int64) (*RemoteHealthStatus, error) {
 	// 获取设备信息
 	var device models.OrangePi
@@ -291,14 +336,68 @@ func (s *OrangePiService) RemoteHealthCheck(ctx context.Context, id int64) (*Rem
 	// 发送HTTP请求
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(remoteURL)
+
+	// 健康检查失败
 	if err != nil {
+		// 如果设备之前是活跃的，更新为不活跃
+		if device.IsActive {
+			device.IsActive = false
+			if updateErr := s.db.WithContext(ctx).Save(&device).Error; updateErr != nil {
+				return nil, fmt.Errorf("failed to connect to remote device and failed to update status: connect=%w, update=%v", err, updateErr)
+			}
+			return &RemoteHealthStatus{
+				Status:          "unhealthy",
+				Service:         "unknown",
+				IsActiveUpdated: true,
+				NewIsActive:     false,
+			}, nil
+		}
 		return nil, fmt.Errorf("failed to connect to remote device: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// 检查响应状态码，非200也视为不健康
+	if resp.StatusCode != http.StatusOK {
+		// 如果设备之前是活跃的，更新为不活跃
+		if device.IsActive {
+			device.IsActive = false
+			if updateErr := s.db.WithContext(ctx).Save(&device).Error; updateErr != nil {
+				return nil, fmt.Errorf("health check returned non-200 and failed to update status: %w", updateErr)
+			}
+			return &RemoteHealthStatus{
+				Status:          "unhealthy",
+				Service:         "unknown",
+				IsActiveUpdated: true,
+				NewIsActive:     false,
+			}, nil
+		}
+		return &RemoteHealthStatus{
+			Status:  "unhealthy",
+			Service: "unknown",
+		}, nil
+	}
+
 	var healthStatus RemoteHealthStatus
 	if err := json.NewDecoder(resp.Body).Decode(&healthStatus); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		// 解码失败也视为不健康
+		healthStatus = RemoteHealthStatus{
+			Status:  "unhealthy",
+			Service: "unknown",
+		}
+	}
+
+	// 根据健康状态判断是否需要更新数据库
+	// healthy/degraded 视为活跃，unhealthy 视为不活跃
+	newIsActive := healthStatus.Status == "healthy" || healthStatus.Status == "degraded"
+
+	// 只有状态变化时才更新数据库
+	if device.IsActive != newIsActive {
+		device.IsActive = newIsActive
+		if updateErr := s.db.WithContext(ctx).Save(&device).Error; updateErr != nil {
+			return nil, fmt.Errorf("health check succeeded but failed to update status: %w", updateErr)
+		}
+		healthStatus.IsActiveUpdated = true
+		healthStatus.NewIsActive = newIsActive
 	}
 
 	return &healthStatus, nil

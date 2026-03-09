@@ -1,6 +1,8 @@
 package container
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strconv"
 	"time"
@@ -50,6 +52,19 @@ func Build() (*Container, error) {
 	}
 	serviceSet.OrangePi = services.NewOrangePiService(db, serviceSet.PublicNet)
 	serviceSet.Auth = services.NewAuthService(db, serviceSet.Admin, serviceSet.OrangePi, serviceSet.Building)
+
+	// 设置 OrangePi 服务的 Token 生成器（解决循环依赖）
+	serviceSet.OrangePi.SetTokenGenerator(func(ctx context.Context, ismartID string, isStaff bool) (string, error) {
+		resp, err := serviceSet.Auth.GeneratePublicToken(ctx, ismartID, isStaff)
+		if err != nil {
+			return "", err
+		}
+		// 返回第一个 OrangePi 的 Token（用于远程设备操作）
+		if len(resp.OrangePis) > 0 {
+			return resp.OrangePis[0].Token, nil
+		}
+		return "", errors.New("no orangepi found")
+	})
 
 	ctrlSet := routes.ControllerSet{
 		Auth:      controllers.NewAuthController(serviceSet.Auth),
