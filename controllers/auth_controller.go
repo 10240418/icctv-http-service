@@ -14,8 +14,9 @@ import (
 // AuthControllerInterface 定义认证接口能力
 type AuthControllerInterface interface {
 	PublicToken(w http.ResponseWriter, r *http.Request)    //1.公开 Token (24小时有效)
-	PermanentToken(w http.ResponseWriter, r *http.Request) //2.永久 Token
-	Login(w http.ResponseWriter, r *http.Request)          //3.管理员登录
+	PublicTokenV2(w http.ResponseWriter, r *http.Request)  //2.带频道备注的公开 Token
+	PermanentToken(w http.ResponseWriter, r *http.Request) //3.永久 Token
+	Login(w http.ResponseWriter, r *http.Request)          //4.管理员登录
 }
 
 // AuthController 认证接口
@@ -52,6 +53,25 @@ func (c *AuthController) PublicToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	respondData(w, http.StatusOK, result)
+}
+
+// PublicTokenV2 生成带频道备注和大厦级频道权限的视频访问 Token。
+func (c *AuthController) PublicTokenV2(w http.ResponseWriter, r *http.Request) {
+	var req publicTokenRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ISmartID == "" {
+		respondError(w, http.StatusBadRequest, "ismartid is required")
+		return
+	}
+	result, err := c.service.GeneratePublicTokenV2(r.Context(), req.ISmartID, req.IsStaff)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	respondData(w, http.StatusOK, result)
 }
 

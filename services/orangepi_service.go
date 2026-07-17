@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"icctv-http-service/models"
@@ -103,7 +104,7 @@ type MediaMTXPathActionResponse struct {
 // TokenGeneratorFunc 定义生成 Token 的函数类型
 // 参数: ismartID, isStaff
 // 返回: token 字符串
-type TokenGeneratorFunc func(ctx context.Context, ismartID string, isStaff bool) (string, error)
+type TokenGeneratorFunc func(ctx context.Context, ismartID string, orangePiID int64, isStaff bool) (string, error)
 
 // OrangePiService 设备业务逻辑
 type OrangePiService struct {
@@ -130,11 +131,18 @@ func (s *OrangePiService) List(ctx context.Context, ismartId string) ([]models.O
 	var devices []models.OrangePi
 	tx := s.db.WithContext(ctx).Model(&models.OrangePi{})
 	if ismartId != "" {
-		tx = tx.Where("ismart_id = ?", ismartId)
+		tx = tx.
+			Joins("JOIN orangepi_buildings ON orangepi_buildings.orange_pi_id = orangepis.id").
+			Joins("JOIN buildings ON buildings.id = orangepi_buildings.building_id AND buildings.deleted_at IS NULL").
+			Where("buildings.ismart_id = ?", strings.TrimSpace(ismartId)).
+			Distinct("orangepis.*")
 	}
-	if err := tx.Preload("Building").Find(&devices).Error; err != nil {
+	if err := tx.Preload("Buildings", func(db *gorm.DB) *gorm.DB {
+		return db.Order("buildings.id ASC")
+	}).Find(&devices).Error; err != nil {
 		return nil, err
 	}
+	hydrateOrangePis(devices)
 	return devices, nil
 }
 
@@ -148,52 +156,258 @@ func (s *OrangePiService) Create(ctx context.Context, payload models.OrangePi) (
 	if payload.AllChannels == nil {
 		payload.AllChannels = []int{}
 	}
+	payload.ChannelRemarks = normalizeChannelRemarks(payload.ChannelRemarks)
 
-	if err := s.db.WithContext(ctx).Create(&payload).Error; err != nil {
+	ismartIDs := payload.ISmartIDs
+	if ismartIDs == nil && payload.ISmartID != "" {
+		ismartIDs = []string{payload.ISmartID}
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		buildings, err := loadBuildingsByISmartIDs(tx, ismartIDs)
+		if err != nil {
+			return err
+		}
+		payload.ISmartID = buildings[0].ISmartID
+		payload.Buildings = nil
+		if err := tx.Create(&payload).Error; err != nil {
+			return err
+		}
+		return syncOrangePiBuildings(tx, payload.ID, buildings, defaultBuildingChannels(payload))
+	})
+	if err != nil {
 		return nil, err
 	}
+	payload.ISmartIDs = normalizeISmartIDs(ismartIDs)
 	return &payload, nil
 }
 
 // 3. Update 更新设备
 func (s *OrangePiService) Update(ctx context.Context, id int64, payload models.OrangePi) (*models.OrangePi, error) {
 	var device models.OrangePi
-	if err := s.db.WithContext(ctx).First(&device, id).Error; err != nil {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&device, id).Error; err != nil {
+			return err
+		}
+
+		if payload.Name != "" {
+			device.Name = payload.Name
+		}
+		if payload.ICCTVAuthServiceRemotePort != 0 {
+			device.ICCTVAuthServiceRemotePort = payload.ICCTVAuthServiceRemotePort
+		}
+		if payload.SSHRemotePort != 0 {
+			device.SSHRemotePort = payload.SSHRemotePort
+		}
+		if payload.IsActiveSet {
+			device.IsActive = payload.IsActive
+		}
+		if payload.UserChannels != nil {
+			device.UserChannels = payload.UserChannels
+		}
+		if payload.AllChannels != nil {
+			device.AllChannels = payload.AllChannels
+		}
+		if payload.ChannelRemarks != nil {
+			device.ChannelRemarks = normalizeChannelRemarks(payload.ChannelRemarks)
+		}
+
+		if payload.ISmartIDs != nil || payload.ISmartID != "" {
+			ismartIDs := payload.ISmartIDs
+			if ismartIDs == nil {
+				ismartIDs = []string{payload.ISmartID}
+			}
+			buildings, err := loadBuildingsByISmartIDs(tx, ismartIDs)
+			if err != nil {
+				return err
+			}
+			device.ISmartID = buildings[0].ISmartID
+			if err := syncOrangePiBuildings(tx, device.ID, buildings, defaultBuildingChannels(device)); err != nil {
+				return err
+			}
+		}
+
+		return tx.Save(&device).Error
+	})
+	if err != nil {
 		return nil, err
 	}
-
-	// 更新字段
-	if payload.ISmartID != "" {
-		device.ISmartID = payload.ISmartID
-	}
-	if payload.Name != "" {
-		device.Name = payload.Name
-	}
-	if payload.ICCTVAuthServiceRemotePort != 0 {
-		device.ICCTVAuthServiceRemotePort = payload.ICCTVAuthServiceRemotePort
-	}
-	if payload.SSHRemotePort != 0 {
-		device.SSHRemotePort = payload.SSHRemotePort
-	}
-	device.IsActive = payload.IsActive
-	// 更新 UserChannels（如果提供了）
-	if payload.UserChannels != nil {
-		device.UserChannels = payload.UserChannels
-	}
-	// 更新 AllChannels（如果提供了）
-	if payload.AllChannels != nil {
-		device.AllChannels = payload.AllChannels
-	}
-
-	if err := s.db.WithContext(ctx).Save(&device).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("Buildings").First(&device, id).Error; err != nil {
 		return nil, err
 	}
+	hydrateOrangePi(&device)
 	return &device, nil
 }
 
 // 4. Delete 删除设备
 func (s *OrangePiService) Delete(ctx context.Context, id int64) error {
-	return s.db.WithContext(ctx).Delete(&models.OrangePi{}, id).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("orange_pi_id = ?", id).Delete(&models.OrangePiBuilding{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&models.OrangePi{}, id).Error
+	})
+}
+
+func defaultBuildingChannels(device models.OrangePi) []int {
+	if len(device.AllChannels) > 0 {
+		return normalizeChannels(device.AllChannels)
+	}
+	return normalizeChannels(device.UserChannels)
+}
+
+func normalizeChannels(values []int) []int {
+	result := make([]int, 0, len(values))
+	seen := make(map[int]struct{}, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func normalizeChannelRemarks(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		result[key] = strings.TrimSpace(value)
+	}
+	return result
+}
+
+func restrictChannels(base, allowed []int) []int {
+	base = normalizeChannels(base)
+	allowed = normalizeChannels(allowed)
+	if len(allowed) == 0 {
+		return base
+	}
+	allowedSet := make(map[int]struct{}, len(allowed))
+	for _, channel := range allowed {
+		allowedSet[channel] = struct{}{}
+	}
+	result := make([]int, 0, len(base))
+	for _, channel := range base {
+		if _, ok := allowedSet[channel]; ok {
+			result = append(result, channel)
+		}
+	}
+	return result
+}
+
+func syncOrangePiBuildings(tx *gorm.DB, orangePiID int64, buildings []models.Building, defaultChannels []int) error {
+	var existing []models.OrangePiBuilding
+	if err := tx.Where("orange_pi_id = ?", orangePiID).Find(&existing).Error; err != nil {
+		return err
+	}
+	existingByBuilding := make(map[int64]models.OrangePiBuilding, len(existing))
+	wanted := make(map[int64]struct{}, len(buildings))
+	for _, link := range existing {
+		existingByBuilding[link.BuildingID] = link
+	}
+	for _, building := range buildings {
+		wanted[building.ID] = struct{}{}
+		if _, ok := existingByBuilding[building.ID]; ok {
+			continue
+		}
+		link := models.OrangePiBuilding{
+			OrangePiID:      orangePiID,
+			BuildingID:      building.ID,
+			AllowedChannels: append([]int(nil), defaultChannels...),
+		}
+		if err := tx.Create(&link).Error; err != nil {
+			return err
+		}
+	}
+	for _, link := range existing {
+		if _, ok := wanted[link.BuildingID]; !ok {
+			if err := tx.Where("orange_pi_id = ? AND building_id = ?", orangePiID, link.BuildingID).Delete(&models.OrangePiBuilding{}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeISmartIDs(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func loadBuildingsByISmartIDs(tx *gorm.DB, values []string) ([]models.Building, error) {
+	ismartIDs := normalizeISmartIDs(values)
+	if len(ismartIDs) == 0 {
+		return nil, errors.New("at least one ismartid is required")
+	}
+
+	var found []models.Building
+	if err := tx.Where("ismart_id IN ?", ismartIDs).Find(&found).Error; err != nil {
+		return nil, err
+	}
+	byISmartID := make(map[string]models.Building, len(found))
+	for _, building := range found {
+		byISmartID[building.ISmartID] = building
+	}
+
+	buildings := make([]models.Building, 0, len(ismartIDs))
+	for _, ismartID := range ismartIDs {
+		building, exists := byISmartID[ismartID]
+		if !exists {
+			return nil, fmt.Errorf("building not found: %s", ismartID)
+		}
+		buildings = append(buildings, building)
+	}
+	return buildings, nil
+}
+
+func hydrateOrangePis(devices []models.OrangePi) {
+	for i := range devices {
+		hydrateOrangePi(&devices[i])
+	}
+}
+
+func hydrateOrangePi(device *models.OrangePi) {
+	device.ISmartIDs = make([]string, 0, len(device.Buildings))
+	for _, building := range device.Buildings {
+		device.ISmartIDs = append(device.ISmartIDs, building.ISmartID)
+	}
+	if len(device.Buildings) > 0 {
+		device.ISmartID = device.Buildings[0].ISmartID
+		device.Building = &device.Buildings[0]
+	}
+}
+
+func (s *OrangePiService) primaryISmartID(ctx context.Context, device *models.OrangePi) (string, error) {
+	if err := s.db.WithContext(ctx).Preload("Buildings", func(db *gorm.DB) *gorm.DB {
+		return db.Order("buildings.id ASC")
+	}).First(device, device.ID).Error; err != nil {
+		return "", err
+	}
+	hydrateOrangePi(device)
+	if len(device.ISmartIDs) == 0 {
+		return "", errors.New("orangepi is not bound to any building")
+	}
+	return device.ISmartIDs[0], nil
 }
 
 // 5. RemoteUpdatePorts 远程更新端口
@@ -235,7 +449,11 @@ func (s *OrangePiService) RemoteUpdatePorts(ctx context.Context, id int64, sshPo
 	if s.generateStaffToken == nil {
 		return nil, errors.New("token generator not configured")
 	}
-	token, err := s.generateStaffToken(ctx, device.ISmartID, true)
+	ismartID, err := s.primaryISmartID(ctx, &device)
+	if err != nil {
+		return nil, err
+	}
+	token, err := s.generateStaffToken(ctx, ismartID, device.ID, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate staff token: %w", err)
 	}

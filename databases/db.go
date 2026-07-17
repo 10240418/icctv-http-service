@@ -13,6 +13,7 @@ import (
 	gmysql "gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -75,14 +76,25 @@ func Init() (*gorm.DB, error) {
 			return
 		}
 
+		if err := conn.SetupJoinTable(&models.OrangePi{}, "Buildings", &models.OrangePiBuilding{}); err != nil {
+			initErr = err
+			return
+		}
+
 		// 按照依赖顺序迁移表：先建没有外键的表，再建有外键依赖的表
 		if err := conn.AutoMigrate(
 			&models.Adminer{},
 			&models.PublicNetConfig{},
 			&models.Building{}, // 必须在 OrangePi 前面，因为 OrangePi 有外键关联
 			&models.OrangePi{},
+			&models.OrangePiBuilding{},
 			&models.NVR{}, // NVR 依赖 Building
 		); err != nil {
+			initErr = err
+			return
+		}
+
+		if err := migrateLegacyOrangePiBuildings(conn); err != nil {
 			initErr = err
 			return
 		}
@@ -97,6 +109,49 @@ func Init() (*gorm.DB, error) {
 	})
 
 	return db, initErr
+}
+
+// migrateLegacyOrangePiBuildings 将旧版 orangepis.ismart_id 数据幂等迁移到关联表。
+func migrateLegacyOrangePiBuildings(db *gorm.DB) error {
+	var orangePis []models.OrangePi
+	if err := db.Where("ismart_id <> ?", "unbound_temp").Find(&orangePis).Error; err != nil {
+		return err
+	}
+
+	for _, orangePi := range orangePis {
+		var building models.Building
+		if err := db.Where("ismart_id = ?", orangePi.ISmartID).First(&building).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return err
+		}
+
+		link := models.OrangePiBuilding{OrangePiID: orangePi.ID, BuildingID: building.ID}
+		if err := db.Where("orange_pi_id = ? AND building_id = ?", orangePi.ID, building.ID).First(&link).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			link.AllowedChannels = legacyOrangePiChannels(orangePi)
+			if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&link).Error; err != nil {
+				return err
+			}
+		} else if len(link.AllowedChannels) == 0 {
+			link.AllowedChannels = legacyOrangePiChannels(orangePi)
+			if err := db.Save(&link).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func legacyOrangePiChannels(orangePi models.OrangePi) []int {
+	if len(orangePi.AllChannels) > 0 {
+		return append([]int(nil), orangePi.AllChannels...)
+	}
+	return append([]int(nil), orangePi.UserChannels...)
 }
 
 // MustDB 返回数据库实例（若未初始化会 Panic）

@@ -54,13 +54,15 @@ func (c *OrangePiController) List(w http.ResponseWriter, r *http.Request) {
 }
 
 type orangePiPayload struct {
-	ISmartID                   string `json:"ismartid"`
-	Name                       string `json:"name"`
-	ICCTVAuthServiceRemotePort int    `json:"icctv_auth_service_remote_port"`
-	SSHRemotePort              int    `json:"ssh_remote_port"`
-	IsActive                   *bool  `json:"is_active"`
-	UserChannels               *[]int `json:"user_channels"` // 普通用户可访问的频道列表
-	AllChannels                *[]int `json:"all_channels"`  // 所有可用频道列表
+	ISmartID                   string             `json:"ismartid"`
+	ISmartIDs                  []string           `json:"ismartids"`
+	Name                       string             `json:"name"`
+	ICCTVAuthServiceRemotePort int                `json:"icctv_auth_service_remote_port"`
+	SSHRemotePort              int                `json:"ssh_remote_port"`
+	IsActive                   *bool              `json:"is_active"`
+	UserChannels               *[]int             `json:"user_channels"` // 普通用户可访问的频道列表
+	AllChannels                *[]int             `json:"all_channels"`  // 所有可用频道列表
+	ChannelRemarks             *map[string]string `json:"channel_remarks"`
 }
 
 // 2. Create 创建设备
@@ -73,18 +75,25 @@ func (c *OrangePiController) Create(w http.ResponseWriter, r *http.Request) {
 
 	device := models.OrangePi{
 		ISmartID:                   req.ISmartID,
+		ISmartIDs:                  req.ISmartIDs,
 		Name:                       req.Name,
 		ICCTVAuthServiceRemotePort: req.ICCTVAuthServiceRemotePort,
 		SSHRemotePort:              req.SSHRemotePort,
 	}
 	if req.IsActive != nil {
 		device.IsActive = *req.IsActive
+		device.IsActiveSet = true
+	} else {
+		device.IsActive = true
 	}
 	if req.UserChannels != nil {
 		device.UserChannels = *req.UserChannels
 	}
 	if req.AllChannels != nil {
 		device.AllChannels = *req.AllChannels
+	}
+	if req.ChannelRemarks != nil {
+		device.ChannelRemarks = *req.ChannelRemarks
 	}
 
 	result, err := c.service.Create(r.Context(), device)
@@ -116,18 +125,23 @@ func (c *OrangePiController) Update(w http.ResponseWriter, r *http.Request) {
 
 	device := models.OrangePi{
 		ISmartID:                   req.ISmartID,
+		ISmartIDs:                  req.ISmartIDs,
 		Name:                       req.Name,
 		ICCTVAuthServiceRemotePort: req.ICCTVAuthServiceRemotePort,
 		SSHRemotePort:              req.SSHRemotePort,
 	}
 	if req.IsActive != nil {
 		device.IsActive = *req.IsActive
+		device.IsActiveSet = true
 	}
 	if req.UserChannels != nil {
 		device.UserChannels = *req.UserChannels
 	}
 	if req.AllChannels != nil {
 		device.AllChannels = *req.AllChannels
+	}
+	if req.ChannelRemarks != nil {
+		device.ChannelRemarks = *req.ChannelRemarks
 	}
 
 	result, err := c.service.Update(r.Context(), id, device)

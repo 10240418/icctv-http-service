@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"icctv-http-service/models"
@@ -26,10 +27,11 @@ import (
 
 // AuthServiceInterface 定义认证业务能力
 type AuthServiceInterface interface {
-	GeneratePublicToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error)    //1.生成公开访问Token(24小时有效)
-	GeneratePermanentToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error) //2.生成永久访问Token
-	Login(ctx context.Context, username, password string) (*AuthToken, error)                                //3.校验账号密码并签发JWT
-	ValidateToken(tokenStr string) (*AdminClaims, error)                                                     //4.验证JWT并返回Claims
+	GeneratePublicToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error)     //1.生成公开访问Token(24小时有效)
+	GeneratePublicTokenV2(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenV2Response, error) //2.生成带频道备注的公开访问Token
+	GeneratePermanentToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error)  //2.生成永久访问Token
+	Login(ctx context.Context, username, password string) (*AuthToken, error)                                 //3.校验账号密码并签发JWT
+	ValidateToken(tokenStr string) (*AdminClaims, error)                                                      //4.验证JWT并返回Claims
 }
 
 // AuthService 认证相关逻辑
@@ -77,6 +79,21 @@ type OrangePiURLs struct {
 // PublicTokenResponse 公开Token响应
 type PublicTokenResponse struct {
 	OrangePis []OrangePiURLs `json:"orangepis"`
+}
+
+// OrangePiURLsV2 是带有频道备注的公开接口响应项。
+type OrangePiURLsV2 struct {
+	OrangePiID     int64             `json:"orangepi_id"`
+	OrangePiName   string            `json:"orangepi_name"`
+	IsActive       bool              `json:"is_active"`
+	ChannelRemarks map[string]string `json:"channel_remarks"`
+	Token          string            `json:"token"`
+	URLs           []string          `json:"urls"`
+}
+
+// PublicTokenV2Response 公开接口 V2 响应。
+type PublicTokenV2Response struct {
+	OrangePis []OrangePiURLsV2 `json:"orangepis"`
 }
 
 // 0. NewAuthService 构造函数，加载基础配置
@@ -128,14 +145,17 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 
 	// 获取该建筑关联的所有 OrangePi 设备（包括非活跃的）
 	var orangePis []models.OrangePi
-	if err := s.db.WithContext(ctx).Where("ismart_id = ?", ismartID).Find(&orangePis).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Joins("JOIN orangepi_buildings ON orangepi_buildings.orange_pi_id = orangepis.id").
+		Where("orangepi_buildings.building_id = ?", building.ID).
+		Order("orangepis.id ASC").
+		Find(&orangePis).Error; err != nil {
 		return nil, fmt.Errorf("failed to query orangepi devices: %w", err)
 	}
 
 	if len(orangePis) == 0 {
 		return nil, fmt.Errorf("no orangepi devices found for building: %s", ismartID)
 	}
-
 	// 获取公网配置
 	var publicNetConfig models.PublicNetConfig
 	if err := s.db.WithContext(ctx).First(&publicNetConfig).Error; err != nil {
@@ -158,7 +178,6 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 			// 普通用户模式：只能访问 UserChannels
 			channelsToUse = opi.UserChannels
 		}
-
 		// 构建 channel 名称列表（用于生成 token）
 		channelNames := make([]string, 0, len(channelsToUse))
 		for _, ch := range channelsToUse {
@@ -205,6 +224,75 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 	}, nil
 }
 
+// GeneratePublicTokenV2 生成带频道备注和大厦频道权限的公开访问 Token。
+// 旧版 /api/auth/public 不读取大厦级频道规则，也不返回频道备注，以保证兼容性。
+func (s *AuthService) GeneratePublicTokenV2(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenV2Response, error) {
+	var building models.Building
+	if err := s.db.WithContext(ctx).Where("ismart_id = ?", ismartID).First(&building).Error; err != nil {
+		return nil, fmt.Errorf("building not found: %s", ismartID)
+	}
+
+	var orangePis []models.OrangePi
+	if err := s.db.WithContext(ctx).
+		Joins("JOIN orangepi_buildings ON orangepi_buildings.orange_pi_id = orangepis.id").
+		Where("orangepi_buildings.building_id = ?", building.ID).
+		Order("orangepis.id ASC").
+		Find(&orangePis).Error; err != nil {
+		return nil, fmt.Errorf("failed to query orangepi devices: %w", err)
+	}
+	if len(orangePis) == 0 {
+		return nil, fmt.Errorf("no orangepi devices found for building: %s", ismartID)
+	}
+
+	channelRules, err := s.loadBuildingChannelRules(ctx, building.ID)
+	if err != nil {
+		return nil, err
+	}
+	var publicNetConfig models.PublicNetConfig
+	if err := s.db.WithContext(ctx).First(&publicNetConfig).Error; err != nil {
+		return nil, fmt.Errorf("public network configuration not found")
+	}
+
+	result := make([]OrangePiURLsV2, 0, len(orangePis))
+	for _, opi := range orangePis {
+		var channelsToUse []int
+		if isStaff {
+			channelsToUse = opi.AllChannels
+			if len(channelsToUse) == 0 {
+				channelsToUse = opi.UserChannels
+			}
+		} else {
+			channelsToUse = opi.UserChannels
+		}
+		channelsToUse = restrictChannels(channelsToUse, channelRules[opi.ID])
+
+		channelNames := make([]string, 0, len(channelsToUse))
+		for _, channel := range channelsToUse {
+			channelNames = append(channelNames, fmt.Sprintf("channel%d", channel))
+		}
+		token, err := s.generateHMACToken(ismartID, channelNames, isStaff)
+		if err != nil {
+			return nil, err
+		}
+
+		urls := make([]string, 0, len(channelsToUse))
+		for _, channel := range channelsToUse {
+			urls = append(urls, fmt.Sprintf("http://%s:%d/channel%d?token=%s",
+				publicNetConfig.ExternalIP, opi.ICCTVAuthServiceRemotePort, channel, token))
+		}
+		result = append(result, OrangePiURLsV2{
+			OrangePiID:     opi.ID,
+			OrangePiName:   opi.Name,
+			IsActive:       opi.IsActive,
+			ChannelRemarks: channelRemarks(opi.ChannelRemarks, channelsToUse),
+			Token:          token,
+			URLs:           urls,
+		})
+	}
+
+	return &PublicTokenV2Response{OrangePis: result}, nil
+}
+
 // GeneratePermanentToken 生成永久访问 Token 和 URLs
 // 与 GeneratePublicToken 逻辑相同，但 Token 永不过期
 func (s *AuthService) GeneratePermanentToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error) {
@@ -216,14 +304,17 @@ func (s *AuthService) GeneratePermanentToken(ctx context.Context, ismartID strin
 
 	// 获取该建筑关联的所有 OrangePi 设备
 	var orangePis []models.OrangePi
-	if err := s.db.WithContext(ctx).Where("ismart_id = ?", ismartID).Find(&orangePis).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Joins("JOIN orangepi_buildings ON orangepi_buildings.orange_pi_id = orangepis.id").
+		Where("orangepi_buildings.building_id = ?", building.ID).
+		Order("orangepis.id ASC").
+		Find(&orangePis).Error; err != nil {
 		return nil, fmt.Errorf("failed to query orangepi devices: %w", err)
 	}
 
 	if len(orangePis) == 0 {
 		return nil, fmt.Errorf("no orangepi devices found for building: %s", ismartID)
 	}
-
 	// 获取公网配置
 	var publicNetConfig models.PublicNetConfig
 	if err := s.db.WithContext(ctx).First(&publicNetConfig).Error; err != nil {
@@ -243,7 +334,6 @@ func (s *AuthService) GeneratePermanentToken(ctx context.Context, ismartID strin
 		} else {
 			channelsToUse = opi.UserChannels
 		}
-
 		channelNames := make([]string, 0, len(channelsToUse))
 		for _, ch := range channelsToUse {
 			channelNames = append(channelNames, fmt.Sprintf("channel%d", ch))
@@ -285,6 +375,27 @@ func (s *AuthService) GeneratePermanentToken(ctx context.Context, ismartID strin
 	return &PublicTokenResponse{
 		OrangePis: orangePiURLsList,
 	}, nil
+}
+
+func (s *AuthService) loadBuildingChannelRules(ctx context.Context, buildingID int64) (map[int64][]int, error) {
+	var links []models.OrangePiBuilding
+	if err := s.db.WithContext(ctx).Where("building_id = ?", buildingID).Find(&links).Error; err != nil {
+		return nil, fmt.Errorf("failed to query building channel rules: %w", err)
+	}
+	result := make(map[int64][]int, len(links))
+	for _, link := range links {
+		result[link.OrangePiID] = append([]int(nil), link.AllowedChannels...)
+	}
+	return result, nil
+}
+
+func channelRemarks(values map[string]string, channels []int) map[string]string {
+	result := make(map[string]string, len(channels))
+	for _, channel := range channels {
+		key := fmt.Sprintf("channel%d", channel)
+		result[key] = strings.TrimSpace(values[key])
+	}
+	return result
 }
 
 // generateHMACToken 生成 HMAC-SHA256 签名的视频 Token（24小时有效）

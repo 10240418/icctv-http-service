@@ -34,6 +34,7 @@ func SetupRoutes(mux *http.ServeMux, ctrl ControllerSet, mw MiddlewareSet) {
 
 	// Auth
 	mux.HandleFunc("POST /api/auth/public", ctrl.Auth.PublicToken)       // 生成视频访问 Token (24小时有效)
+	mux.HandleFunc("POST /api/auth/public/v2", ctrl.Auth.PublicTokenV2)  // 生成带频道备注的 Token
 	mux.HandleFunc("POST /api/auth/permanent", ctrl.Auth.PermanentToken) // 生成永久视频访问 Token
 	mux.HandleFunc("POST /api/auth/login", ctrl.Auth.Login)              // 管理员登录
 
@@ -86,6 +87,7 @@ func SetupRoutes(mux *http.ServeMux, ctrl ControllerSet, mw MiddlewareSet) {
 	mux.HandleFunc("POST /api/bind/building-orangepi", requireAdmin(ctrl.Building.BindOrangePi))
 	mux.HandleFunc("DELETE /api/bind/building-orangepi", requireAdmin(ctrl.Building.UnbindOrangePi))
 	mux.HandleFunc("GET /api/bind/building-orangepi/{building_id}", requireAdmin(ctrl.Building.GetBuildingOrangePis))
+	mux.HandleFunc("PUT /api/bind/building-orangepi/channels", requireAdmin(ctrl.Building.UpdateOrangePiChannels))
 
 	// Building-NVR
 	mux.HandleFunc("POST /api/bind/building-nvr", requireAdmin(ctrl.Building.BindNVR))

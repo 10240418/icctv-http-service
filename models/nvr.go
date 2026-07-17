@@ -14,8 +14,10 @@ type User struct {
 
 // ChannelURL RTSP频道地址
 type ChannelURL struct {
-	Channel int    `json:"channel"` // 通道号
-	URL     string `json:"url"`     // RTSP 地址
+	Channel int    `json:"channel"`          // 通道号，保留兼容旧数据
+	Path    string `json:"path,omitempty"`   // MediaMTX Path 名称
+	URL     string `json:"url"`              // RTSP 地址
+	Remark  string `json:"remark,omitempty"` // 地址说明
 }
 
 // NVR 网络硬盘录像机模型

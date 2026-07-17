@@ -17,17 +17,18 @@ import (
 
 // BuildingControllerInterface 定义建筑接口能力
 type BuildingControllerInterface interface {
-	List(w http.ResponseWriter, r *http.Request)                 //1.查询建筑
-	Create(w http.ResponseWriter, r *http.Request)               //2.创建建筑
-	Update(w http.ResponseWriter, r *http.Request)               //3.更新建筑
-	Delete(w http.ResponseWriter, r *http.Request)               //4.删除建筑
-	BindOrangePi(w http.ResponseWriter, r *http.Request)         //5.绑定OrangePi
-	UnbindOrangePi(w http.ResponseWriter, r *http.Request)       //6.解绑OrangePi
-	UpdateBind(w http.ResponseWriter, r *http.Request)           //7.更新绑定
-	GetBuildingOrangePis(w http.ResponseWriter, r *http.Request) //8.查询Building关联的OrangePi
-	BindNVR(w http.ResponseWriter, r *http.Request)              //9.绑定NVR
-	UnbindNVR(w http.ResponseWriter, r *http.Request)            //10.解绑NVR
-	GetBuildingNVRs(w http.ResponseWriter, r *http.Request)      //11.查询Building关联的NVR
+	List(w http.ResponseWriter, r *http.Request)                   //1.查询建筑
+	Create(w http.ResponseWriter, r *http.Request)                 //2.创建建筑
+	Update(w http.ResponseWriter, r *http.Request)                 //3.更新建筑
+	Delete(w http.ResponseWriter, r *http.Request)                 //4.删除建筑
+	BindOrangePi(w http.ResponseWriter, r *http.Request)           //5.绑定OrangePi
+	UnbindOrangePi(w http.ResponseWriter, r *http.Request)         //6.解绑OrangePi
+	UpdateBind(w http.ResponseWriter, r *http.Request)             //7.更新绑定
+	GetBuildingOrangePis(w http.ResponseWriter, r *http.Request)   //8.查询Building关联的OrangePi
+	UpdateOrangePiChannels(w http.ResponseWriter, r *http.Request) //9.更新大厦可见频道
+	BindNVR(w http.ResponseWriter, r *http.Request)                //10.绑定NVR
+	UnbindNVR(w http.ResponseWriter, r *http.Request)              //11.解绑NVR
+	GetBuildingNVRs(w http.ResponseWriter, r *http.Request)        //12.查询Building关联的NVR
 }
 
 // BuildingController 建筑接口
@@ -105,6 +106,7 @@ type bindOrangePiRequest struct {
 }
 
 type unbindOrangePiRequest struct {
+	BuildingID int64 `json:"building_id"`
 	OrangePiID int64 `json:"orangepi_id"`
 }
 
@@ -142,7 +144,7 @@ func (c *BuildingController) UnbindOrangePi(w http.ResponseWriter, r *http.Reque
 		respondError(w, http.StatusBadRequest, "orangepi_id must be a positive integer")
 		return
 	}
-	if err := c.service.UnbindOrangePi(r.Context(), req.OrangePiID); err != nil {
+	if err := c.service.UnbindOrangePi(r.Context(), req.BuildingID, req.OrangePiID); err != nil {
 		handleServiceError(w, err)
 		return
 	}
@@ -190,6 +192,30 @@ func (c *BuildingController) GetBuildingOrangePis(w http.ResponseWriter, r *http
 	respondData(w, http.StatusOK, orangePis)
 }
 
+type updateOrangePiChannelsRequest struct {
+	BuildingID int64 `json:"building_id"`
+	OrangePiID int64 `json:"orangepi_id"`
+	Channels   []int `json:"channels"`
+}
+
+// 9. UpdateOrangePiChannels 更新大厦可见频道。
+func (c *BuildingController) UpdateOrangePiChannels(w http.ResponseWriter, r *http.Request) {
+	var req updateOrangePiChannelsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.BuildingID <= 0 || req.OrangePiID <= 0 {
+		respondError(w, http.StatusBadRequest, "building_id and orangepi_id must be positive integers")
+		return
+	}
+	if err := c.service.UpdateOrangePiChannels(r.Context(), req.BuildingID, req.OrangePiID, req.Channels); err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	respondData(w, http.StatusOK, map[string]bool{"updated": true})
+}
+
 type bindNVRRequest struct {
 	BuildingID int64 `json:"building_id"`
 	NVRID      int64 `json:"nvr_id"`
@@ -199,7 +225,7 @@ type unbindNVRRequest struct {
 	NVRID int64 `json:"nvr_id"`
 }
 
-// 9. BindNVR 绑定NVR到建筑
+// 10. BindNVR 绑定NVR到建筑
 func (c *BuildingController) BindNVR(w http.ResponseWriter, r *http.Request) {
 	var req bindNVRRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -217,7 +243,7 @@ func (c *BuildingController) BindNVR(w http.ResponseWriter, r *http.Request) {
 	respondData(w, http.StatusOK, map[string]bool{"bound": true})
 }
 
-// 10. UnbindNVR 解绑NVR
+// 11. UnbindNVR 解绑NVR
 func (c *BuildingController) UnbindNVR(w http.ResponseWriter, r *http.Request) {
 	var req unbindNVRRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -235,7 +261,7 @@ func (c *BuildingController) UnbindNVR(w http.ResponseWriter, r *http.Request) {
 	respondData(w, http.StatusOK, map[string]bool{"unbound": true})
 }
 
-// 11. GetBuildingNVRs 查询Building关联的所有NVR
+// 12. GetBuildingNVRs 查询Building关联的所有NVR
 func (c *BuildingController) GetBuildingNVRs(w http.ResponseWriter, r *http.Request) {
 	// 从路径参数中获取building_id
 	buildingIDStr := r.PathValue("building_id")
