@@ -25,7 +25,8 @@ type OrangePiControllerInterface interface {
 	RemoteGetInfo(w http.ResponseWriter, r *http.Request)     //6.远程获取设备信息
 	RemoteHealthCheck(w http.ResponseWriter, r *http.Request) //7.远程健康检查
 	// MediaMTX 远程管理
-	RemoteListMediaMTXPaths(w http.ResponseWriter, r *http.Request)  //9.远程列出paths
+	RemoteListMediaMTXPaths(w http.ResponseWriter, r *http.Request) //9.远程列出paths
+	SyncMediaMTXChannels(w http.ResponseWriter, r *http.Request)
 	RemoteGetMediaMTXPath(w http.ResponseWriter, r *http.Request)    //10.远程查询单个path
 	RemoteAddMediaMTXPath(w http.ResponseWriter, r *http.Request)    //11.远程新增path
 	RemoteUpdateMediaMTXPath(w http.ResponseWriter, r *http.Request) //12.远程更新path
@@ -326,6 +327,27 @@ func (c *OrangePiController) RemoteGetMediaMTXPath(w http.ResponseWriter, r *htt
 type remoteMediaMTXPathRequest struct {
 	Name   string                 `json:"name"`
 	Config map[string]interface{} `json:"config"`
+}
+
+func (c *OrangePiController) SyncMediaMTXChannels(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if err != nil || id <= 0 {
+		respondError(w, http.StatusBadRequest, "valid id is required")
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Token == "" {
+		respondError(w, http.StatusBadRequest, "token is required")
+		return
+	}
+	result, err := c.service.SyncMediaMTXChannels(r.Context(), id, req.Token)
+	if err != nil {
+		respondError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	respondData(w, http.StatusOK, result)
 }
 
 // 11. RemoteAddMediaMTXPath 远程新增 MediaMTX path

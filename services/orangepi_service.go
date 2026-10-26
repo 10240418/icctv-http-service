@@ -20,6 +20,7 @@ import (
 	"icctv-http-service/models"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // OrangePiServiceInterface 定义设备业务能力
@@ -32,7 +33,8 @@ type OrangePiServiceInterface interface {
 	RemoteGetInfo(ctx context.Context, id int64, token string) (*RemoteDeviceInfo, error)                    //6.远程获取设备信息
 	RemoteHealthCheck(ctx context.Context, id int64) (*RemoteHealthStatus, error)                            //7.远程健康检查
 	// MediaMTX 远程管理
-	RemoteListMediaMTXPaths(ctx context.Context, id int64, token string, page int, itemsPerPage int) (*MediaMTXPathsListResponse, error)                   //9.远程列出paths
+	RemoteListMediaMTXPaths(ctx context.Context, id int64, token string, page int, itemsPerPage int) (*MediaMTXPathsListResponse, error) //9.远程列出paths
+	SyncMediaMTXChannels(ctx context.Context, id int64, token string) (*models.OrangePi, error)
 	RemoteGetMediaMTXPath(ctx context.Context, id int64, token string, name string) (*MediaMTXPathDetailResponse, error)                                   //10.远程查询单个path
 	RemoteAddMediaMTXPath(ctx context.Context, id int64, token string, name string, config map[string]interface{}) (*MediaMTXPathActionResponse, error)    //11.远程新增path
 	RemoteUpdateMediaMTXPath(ctx context.Context, id int64, token string, name string, config map[string]interface{}) (*MediaMTXPathActionResponse, error) //12.远程更新path
@@ -186,7 +188,7 @@ func (s *OrangePiService) Create(ctx context.Context, payload models.OrangePi) (
 func (s *OrangePiService) Update(ctx context.Context, id int64, payload models.OrangePi) (*models.OrangePi, error) {
 	var device models.OrangePi
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&device, id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&device, id).Error; err != nil {
 			return err
 		}
 
@@ -270,6 +272,10 @@ func normalizeChannels(values []int) []int {
 		result = append(result, value)
 	}
 	return result
+}
+
+func (s *OrangePiService) registerMediaMTXChannel(ctx context.Context, orangePiID int64, pathName string) error {
+	return s.registerMediaMTXPaths(ctx, orangePiID, []MediaMTXPathItem{{Name: pathName}})
 }
 
 func normalizeChannelRemarks(values map[string]string) map[string]string {
@@ -490,7 +496,8 @@ func (s *OrangePiService) RemoteUpdatePorts(ctx context.Context, id int64, sshPo
 	if result.Success {
 		device.SSHRemotePort = sshPort
 		device.ICCTVAuthServiceRemotePort = authPort
-		if err := s.db.WithContext(ctx).Save(&device).Error; err != nil {
+		if err := s.db.WithContext(ctx).Model(&device).
+			Select("SSHRemotePort", "ICCTVAuthServiceRemotePort").Updates(&device).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -560,7 +567,7 @@ func (s *OrangePiService) RemoteHealthCheck(ctx context.Context, id int64) (*Rem
 		// 如果设备之前是活跃的，更新为不活跃
 		if device.IsActive {
 			device.IsActive = false
-			if updateErr := s.db.WithContext(ctx).Save(&device).Error; updateErr != nil {
+			if updateErr := s.db.WithContext(ctx).Model(&device).Select("IsActive").Updates(&device).Error; updateErr != nil {
 				return nil, fmt.Errorf("failed to connect to remote device and failed to update status: connect=%w, update=%v", err, updateErr)
 			}
 			return &RemoteHealthStatus{
@@ -579,7 +586,7 @@ func (s *OrangePiService) RemoteHealthCheck(ctx context.Context, id int64) (*Rem
 		// 如果设备之前是活跃的，更新为不活跃
 		if device.IsActive {
 			device.IsActive = false
-			if updateErr := s.db.WithContext(ctx).Save(&device).Error; updateErr != nil {
+			if updateErr := s.db.WithContext(ctx).Model(&device).Select("IsActive").Updates(&device).Error; updateErr != nil {
 				return nil, fmt.Errorf("health check returned non-200 and failed to update status: %w", updateErr)
 			}
 			return &RemoteHealthStatus{
@@ -611,7 +618,7 @@ func (s *OrangePiService) RemoteHealthCheck(ctx context.Context, id int64) (*Rem
 	// 只有状态变化时才更新数据库
 	if device.IsActive != newIsActive {
 		device.IsActive = newIsActive
-		if updateErr := s.db.WithContext(ctx).Save(&device).Error; updateErr != nil {
+		if updateErr := s.db.WithContext(ctx).Model(&device).Select("IsActive").Updates(&device).Error; updateErr != nil {
 			return nil, fmt.Errorf("health check succeeded but failed to update status: %w", updateErr)
 		}
 		healthStatus.IsActiveUpdated = true
@@ -623,6 +630,17 @@ func (s *OrangePiService) RemoteHealthCheck(ctx context.Context, id int64) (*Rem
 
 // 9. RemoteListMediaMTXPaths 远程列出 MediaMTX paths
 func (s *OrangePiService) RemoteListMediaMTXPaths(ctx context.Context, id int64, token string, page int, itemsPerPage int) (*MediaMTXPathsListResponse, error) {
+	result, err := s.fetchMediaMTXPaths(ctx, id, token, page, itemsPerPage)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.registerMediaMTXPaths(ctx, id, result.Items); err != nil {
+		return nil, fmt.Errorf("failed to register MediaMTX channels: %w", err)
+	}
+	return result, nil
+}
+
+func (s *OrangePiService) fetchMediaMTXPaths(ctx context.Context, id int64, token string, page int, itemsPerPage int) (*MediaMTXPathsListResponse, error) {
 	// 获取设备信息
 	var device models.OrangePi
 	if err := s.db.WithContext(ctx).First(&device, id).Error; err != nil {
@@ -641,7 +659,11 @@ func (s *OrangePiService) RemoteListMediaMTXPaths(ctx context.Context, id int64,
 
 	// 发送HTTP请求
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(remoteURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to remote device: %w", err)
 	}
@@ -651,12 +673,7 @@ func (s *OrangePiService) RemoteListMediaMTXPaths(ctx context.Context, id int64,
 		return nil, fmt.Errorf("remote device returned status: %d", resp.StatusCode)
 	}
 
-	var result MediaMTXPathsListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &result, nil
+	return decodeMediaMTXPaths(resp.Body, page)
 }
 
 // 10. RemoteGetMediaMTXPath 远程查询单个 MediaMTX path
@@ -741,6 +758,12 @@ func (s *OrangePiService) RemoteAddMediaMTXPath(ctx context.Context, id int64, t
 	var result MediaMTXPathActionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("remote device failed to add MediaMTX path: status %d", result.StatusCode)
+	}
+	if err := s.registerMediaMTXChannel(ctx, device.ID, name); err != nil {
+		return nil, fmt.Errorf("MediaMTX path was created but its channel could not be registered: %w", err)
 	}
 
 	return &result, nil

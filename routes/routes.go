@@ -62,6 +62,7 @@ func SetupRoutes(mux *http.ServeMux, ctrl ControllerSet, mw MiddlewareSet) {
 	mux.HandleFunc("GET /api/orangepi/remote/health", requireAdmin(ctrl.OrangePi.RemoteHealthCheck))
 
 	// OrangePi Remote MediaMTX Paths
+	mux.HandleFunc("POST /api/orangepi/remote/channels/sync", requireAdmin(ctrl.OrangePi.SyncMediaMTXChannels))
 	mux.HandleFunc("GET /api/orangepi/remote/paths", requireAdmin(ctrl.OrangePi.RemoteListMediaMTXPaths))
 	mux.HandleFunc("GET /api/orangepi/remote/paths/detail", requireAdmin(ctrl.OrangePi.RemoteGetMediaMTXPath))
 	mux.HandleFunc("POST /api/orangepi/remote/paths", requireAdmin(ctrl.OrangePi.RemoteAddMediaMTXPath))

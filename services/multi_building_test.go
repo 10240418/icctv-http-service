@@ -83,6 +83,47 @@ func TestPublicTokenSupportsOneOrangePiBoundToMultipleBuildings(t *testing.T) {
 	}
 }
 
+func TestRegisterMediaMTXChannelAddsAllPathsWithoutChangingPermissions(t *testing.T) {
+	db := newMultiBuildingTestDB(t)
+	ctx := context.Background()
+	device := models.OrangePi{
+		ISmartID:                   "building-a",
+		Name:                       "Orange Pi channel sync",
+		ICCTVAuthServiceRemotePort: 29005,
+		SSHRemotePort:              30005,
+		AllChannels:                []int{1, 2, 8},
+		UserChannels:               []int{1, 2},
+	}
+	if err := db.Create(&device).Error; err != nil {
+		t.Fatalf("create orangepi: %v", err)
+	}
+
+	service := NewOrangePiService(db, NewPublicNetService(db))
+	if err := service.registerMediaMTXChannel(ctx, device.ID, "channel9"); err != nil {
+		t.Fatalf("register channel9: %v", err)
+	}
+	if err := service.registerMediaMTXChannel(ctx, device.ID, "channel9"); err != nil {
+		t.Fatalf("register channel9 again: %v", err)
+	}
+	if err := service.registerMediaMTXChannel(ctx, device.ID, "lobby-camera"); err != nil {
+		t.Fatalf("register non-channel path: %v", err)
+	}
+
+	var stored models.OrangePi
+	if err := db.First(&stored, device.ID).Error; err != nil {
+		t.Fatalf("load orangepi: %v", err)
+	}
+	if got, want := fmt.Sprint(stored.AllChannels), "[1 2 8]"; got != want {
+		t.Fatalf("selected channels = %s, want %s", got, want)
+	}
+	if stored.ChannelPaths["channel9"] != "channel9" || stored.ChannelPaths["channel10"] != "lobby-camera" {
+		t.Fatalf("numeric and custom paths must both be registered: %v", stored.ChannelPaths)
+	}
+	if got, want := fmt.Sprint(stored.UserChannels), "[1 2]"; got != want {
+		t.Fatalf("user channels changed to %s, want %s", got, want)
+	}
+}
+
 func TestUnbindOrangePiOnlyRemovesSelectedBuilding(t *testing.T) {
 	db := newMultiBuildingTestDB(t)
 	ctx := context.Background()
@@ -129,7 +170,7 @@ func TestUnbindOrangePiOnlyRemovesSelectedBuilding(t *testing.T) {
 	}
 }
 
-func TestPublicTokenV2AddsRemarksWithoutChangingLegacyResponse(t *testing.T) {
+func TestLegacyTokensPreserveDeviceScopeAndV2AppliesBuildingChannels(t *testing.T) {
 	db := newMultiBuildingTestDB(t)
 	ctx := context.Background()
 
@@ -169,7 +210,11 @@ func TestPublicTokenV2AddsRemarksWithoutChangingLegacyResponse(t *testing.T) {
 		t.Fatalf("generate legacy token: %v", err)
 	}
 	if got := len(legacy.OrangePis[0].URLs); got != 2 {
-		t.Fatalf("legacy endpoint should keep two user channels, got %d", got)
+		t.Fatalf("legacy endpoint should retain device channels, got %d urls", got)
+	}
+	if !strings.Contains(legacy.OrangePis[0].URLs[0], "/channel1?") ||
+		!strings.Contains(legacy.OrangePis[0].URLs[1], "/channel2?") {
+		t.Fatal("legacy endpoint changed device channel scope")
 	}
 	legacyJSON, err := json.Marshal(legacy)
 	if err != nil {
@@ -177,6 +222,17 @@ func TestPublicTokenV2AddsRemarksWithoutChangingLegacyResponse(t *testing.T) {
 	}
 	if strings.Contains(string(legacyJSON), "channel_remarks") || strings.Contains(string(legacyJSON), "remarks") {
 		t.Fatalf("legacy response unexpectedly contains remarks: %s", legacyJSON)
+	}
+	permanent, err := authService.GeneratePermanentToken(ctx, building.ISmartID, false)
+	if err != nil {
+		t.Fatalf("generate permanent token: %v", err)
+	}
+	if got := len(permanent.OrangePis[0].URLs); got != 2 {
+		t.Fatalf("permanent token should retain device channels, got %d urls", got)
+	}
+	if !strings.Contains(permanent.OrangePis[0].URLs[0], "/channel1?") ||
+		!strings.Contains(permanent.OrangePis[0].URLs[1], "/channel2?") {
+		t.Fatal("permanent endpoint changed device channel scope")
 	}
 
 	v2, err := authService.GeneratePublicTokenV2(ctx, building.ISmartID, false)

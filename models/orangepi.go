@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -25,8 +26,9 @@ type OrangePi struct {
 	SSHRemotePort              int               `gorm:"not null" json:"ssh_remote_port"`                                         // SSH 远程端口
 	IsActive                   bool              `gorm:"default:true" json:"is_active"`                                           // 是否在用
 	UserChannels               []int             `gorm:"type:json;serializer:json" json:"user_channels"`                          // 普通用户可访问的频道列表
-	AllChannels                []int             `gorm:"type:json;serializer:json" json:"all_channels"`                           // 所有可用频道列表
+	AllChannels                []int             `gorm:"type:json;serializer:json" json:"all_channels"`                           // 员工可访问的频道列表
 	ChannelRemarks             map[string]string `gorm:"type:json;serializer:json;column:channel_remarks" json:"channel_remarks"` // 频道说明
+	ChannelPaths               map[string]string `gorm:"type:json;serializer:json;column:channel_paths" json:"channel_paths"`
 	Buildings                  []Building        `gorm:"many2many:orangepi_buildings;foreignKey:ID;joinForeignKey:OrangePiID;references:ID;joinReferences:BuildingID" json:"buildings,omitempty"`
 	Building                   *Building         `gorm:"-" json:"building,omitempty"`
 	BuildingChannels           []int             `gorm:"-" json:"building_channels,omitempty"`
@@ -63,8 +65,20 @@ func (o *OrangePi) BeforeSave(tx *gorm.DB) error {
 	if o.ChannelRemarks == nil {
 		o.ChannelRemarks = map[string]string{}
 	}
+	if o.ChannelPaths == nil {
+		o.ChannelPaths = map[string]string{}
+	}
 
 	return nil
+}
+
+// ChannelPath resolves a stable permission ID without renaming the MediaMTX path.
+func (o OrangePi) ChannelPath(channel int) string {
+	key := fmt.Sprintf("channel%d", channel)
+	if path := o.ChannelPaths[key]; path != "" {
+		return path
+	}
+	return key
 }
 
 // BeforeSave initializes association channels as an empty JSON array.

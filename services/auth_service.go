@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -133,8 +134,9 @@ func NewAuthService(db *gorm.DB, adminService *AdminService, orangePiService *Or
 // 参数：ismartID - 建筑ISmartID, isStaff - 是否员工
 // 逻辑：
 //   - 每个 OrangePi 独立生成 Token
-//   - is_staff=true: 返回该 OrangePi 的 AllChannels（如果存在）或 UserChannels
-//   - is_staff=false: 只返回该 OrangePi 的 UserChannels
+//   - is_staff=true: 使用该 OrangePi 的 AllChannels（如果存在）或 UserChannels
+//   - is_staff=false: 使用该 OrangePi 的 UserChannels
+//   - 旧版接口保留线上行为，不读取大厦级 AllowedChannels
 //   - 无论 is_active 状态如何，都会返回 OrangePi 信息和 URLs
 func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error) {
 	// 检查建筑是否存在
@@ -181,7 +183,7 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 		// 构建 channel 名称列表（用于生成 token）
 		channelNames := make([]string, 0, len(channelsToUse))
 		for _, ch := range channelsToUse {
-			channelNames = append(channelNames, fmt.Sprintf("channel%d", ch))
+			channelNames = append(channelNames, opi.ChannelPath(ch))
 		}
 
 		// 为该 OrangePi 生成独立的 Token
@@ -200,12 +202,8 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 		// 构建 URLs
 		urls := make([]string, 0, len(channelsToUse))
 		for _, ch := range channelsToUse {
-			url := fmt.Sprintf("http://%s:%d/channel%d?token=%s",
-				publicNetConfig.ExternalIP,
-				opi.ICCTVAuthServiceRemotePort,
-				ch,
-				token)
-			urls = append(urls, url)
+			urls = append(urls, streamURL(publicNetConfig.ExternalIP,
+				opi.ICCTVAuthServiceRemotePort, opi.ChannelPath(ch), token))
 		}
 
 		orangePiURLs := OrangePiURLs{
@@ -225,7 +223,7 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 }
 
 // GeneratePublicTokenV2 生成带频道备注和大厦频道权限的公开访问 Token。
-// 旧版 /api/auth/public 不读取大厦级频道规则，也不返回频道备注，以保证兼容性。
+// 旧版 /api/auth/public 保留线上行为，不读取大厦级频道规则。
 func (s *AuthService) GeneratePublicTokenV2(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenV2Response, error) {
 	var building models.Building
 	if err := s.db.WithContext(ctx).Where("ismart_id = ?", ismartID).First(&building).Error; err != nil {
@@ -268,7 +266,7 @@ func (s *AuthService) GeneratePublicTokenV2(ctx context.Context, ismartID string
 
 		channelNames := make([]string, 0, len(channelsToUse))
 		for _, channel := range channelsToUse {
-			channelNames = append(channelNames, fmt.Sprintf("channel%d", channel))
+			channelNames = append(channelNames, opi.ChannelPath(channel))
 		}
 		token, err := s.generateHMACToken(ismartID, channelNames, isStaff)
 		if err != nil {
@@ -277,14 +275,14 @@ func (s *AuthService) GeneratePublicTokenV2(ctx context.Context, ismartID string
 
 		urls := make([]string, 0, len(channelsToUse))
 		for _, channel := range channelsToUse {
-			urls = append(urls, fmt.Sprintf("http://%s:%d/channel%d?token=%s",
-				publicNetConfig.ExternalIP, opi.ICCTVAuthServiceRemotePort, channel, token))
+			urls = append(urls, streamURL(publicNetConfig.ExternalIP,
+				opi.ICCTVAuthServiceRemotePort, opi.ChannelPath(channel), token))
 		}
 		result = append(result, OrangePiURLsV2{
 			OrangePiID:     opi.ID,
 			OrangePiName:   opi.Name,
 			IsActive:       opi.IsActive,
-			ChannelRemarks: channelRemarks(opi.ChannelRemarks, channelsToUse),
+			ChannelRemarks: channelRemarks(opi, channelsToUse),
 			Token:          token,
 			URLs:           urls,
 		})
@@ -336,7 +334,7 @@ func (s *AuthService) GeneratePermanentToken(ctx context.Context, ismartID strin
 		}
 		channelNames := make([]string, 0, len(channelsToUse))
 		for _, ch := range channelsToUse {
-			channelNames = append(channelNames, fmt.Sprintf("channel%d", ch))
+			channelNames = append(channelNames, opi.ChannelPath(ch))
 		}
 
 		// 生成永久 Token（expiry = 0 表示永不过期）
@@ -353,12 +351,8 @@ func (s *AuthService) GeneratePermanentToken(ctx context.Context, ismartID strin
 
 		urls := make([]string, 0, len(channelsToUse))
 		for _, ch := range channelsToUse {
-			url := fmt.Sprintf("http://%s:%d/channel%d?token=%s",
-				publicNetConfig.ExternalIP,
-				opi.ICCTVAuthServiceRemotePort,
-				ch,
-				token)
-			urls = append(urls, url)
+			urls = append(urls, streamURL(publicNetConfig.ExternalIP,
+				opi.ICCTVAuthServiceRemotePort, opi.ChannelPath(ch), token))
 		}
 
 		orangePiURLs := OrangePiURLs{
@@ -389,11 +383,20 @@ func (s *AuthService) loadBuildingChannelRules(ctx context.Context, buildingID i
 	return result, nil
 }
 
-func channelRemarks(values map[string]string, channels []int) map[string]string {
+func streamURL(host string, port int, path, token string) string {
+	return (&url.URL{
+		Scheme:   "http",
+		Host:     fmt.Sprintf("%s:%d", host, port),
+		Path:     "/" + path,
+		RawQuery: url.Values{"token": {token}}.Encode(),
+	}).String()
+}
+
+func channelRemarks(device models.OrangePi, channels []int) map[string]string {
 	result := make(map[string]string, len(channels))
 	for _, channel := range channels {
 		key := fmt.Sprintf("channel%d", channel)
-		result[key] = strings.TrimSpace(values[key])
+		result[device.ChannelPath(channel)] = strings.TrimSpace(device.ChannelRemarks[key])
 	}
 	return result
 }

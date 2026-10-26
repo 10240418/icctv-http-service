@@ -273,7 +273,7 @@ func (s *BuildingService) UpdateOrangePiChannels(ctx context.Context, buildingId
 			}
 			return err
 		}
-		available := defaultBuildingChannels(orangePi)
+		available := catalogueChannels(orangePi)
 		availableSet := make(map[int]struct{}, len(available))
 		for _, channel := range available {
 			availableSet[channel] = struct{}{}
