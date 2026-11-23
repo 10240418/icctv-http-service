@@ -9,13 +9,14 @@ import (
 
 // ControllerSet 聚合所有控制器
 type ControllerSet struct {
-	Auth      *controllers.AuthController
-	Admin     *controllers.AdminController
-	OrangePi  *controllers.OrangePiController
-	Building  *controllers.BuildingController
-	Device    *controllers.DeviceController
-	PublicNet *controllers.PublicNetController
-	NVR       *controllers.NVRController
+	Auth       *controllers.AuthController
+	Admin      *controllers.AdminController
+	OrangePi   *controllers.OrangePiController
+	Building   *controllers.BuildingController
+	Device     *controllers.DeviceController
+	PublicNet  *controllers.PublicNetController
+	NVR        *controllers.NVRController
+	RTSPSource *controllers.RTSPSourceController
 }
 
 // MiddlewareSet 聚合所有中间件
@@ -64,12 +65,19 @@ func SetupRoutes(mux *http.ServeMux, ctrl ControllerSet, mw MiddlewareSet) {
 	// OrangePi Remote MediaMTX Paths
 	mux.HandleFunc("POST /api/orangepi/remote/channels/sync", requireAdmin(ctrl.OrangePi.SyncMediaMTXChannels))
 	mux.HandleFunc("GET /api/orangepi/remote/paths", requireAdmin(ctrl.OrangePi.RemoteListMediaMTXPaths))
+	mux.HandleFunc("GET /api/orangepi/remote/paths/preview", requireAdmin(ctrl.OrangePi.RemotePreviewMediaMTXPaths))
 	mux.HandleFunc("GET /api/orangepi/remote/paths/detail", requireAdmin(ctrl.OrangePi.RemoteGetMediaMTXPath))
 	mux.HandleFunc("POST /api/orangepi/remote/paths", requireAdmin(ctrl.OrangePi.RemoteAddMediaMTXPath))
 	mux.HandleFunc("PATCH /api/orangepi/remote/paths", requireAdmin(ctrl.OrangePi.RemoteUpdateMediaMTXPath))
 	mux.HandleFunc("DELETE /api/orangepi/remote/paths", requireAdmin(ctrl.OrangePi.RemoteDeleteMediaMTXPath))
 
 	// NVR
+	if ctrl.RTSPSource != nil {
+		mux.HandleFunc("GET /api/rtsp-sources", requireAdmin(ctrl.RTSPSource.List))
+		mux.HandleFunc("POST /api/rtsp-sources", requireAdmin(ctrl.RTSPSource.Create))
+		mux.HandleFunc("PUT /api/rtsp-sources", requireAdmin(ctrl.RTSPSource.Update))
+		mux.HandleFunc("DELETE /api/rtsp-sources", requireAdmin(ctrl.RTSPSource.Delete))
+	}
 	mux.HandleFunc("GET /api/nvr", requireAdmin(ctrl.NVR.List))
 	mux.HandleFunc("POST /api/nvr", requireAdmin(ctrl.NVR.Create))
 	mux.HandleFunc("PUT /api/nvr", requireAdmin(ctrl.NVR.Update))

@@ -83,16 +83,8 @@ func TestRTSPChannelsBeyondNinePreserveExplicitVisibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(after.OrangePis) != 1 || len(after.OrangePis[0].URLs) != 2 ||
-		!strings.Contains(after.OrangePis[0].URLs[1], "/channel100?") {
+	if len(after.OrangePis) != 1 || len(after.OrangePis[0].URLs) != 1 ||
+		!strings.Contains(after.OrangePis[0].URLs[0], "/channel100?") {
 		t.Fatalf("explicitly allowed high channel is missing: %+v", after)
-	}
-	v2, err := authService.GeneratePublicTokenV2(ctx, building.ISmartID, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(v2.OrangePis) != 1 || len(v2.OrangePis[0].URLs) != 1 ||
-		!strings.Contains(v2.OrangePis[0].URLs[0], "/channel100?") {
-		t.Fatalf("V2 did not filter by building visibility: %+v", v2)
 	}
 }

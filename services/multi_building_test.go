@@ -2,8 +2,10 @@ package services
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -170,7 +172,7 @@ func TestUnbindOrangePiOnlyRemovesSelectedBuilding(t *testing.T) {
 	}
 }
 
-func TestLegacyTokensPreserveDeviceScopeAndV2AppliesBuildingChannels(t *testing.T) {
+func TestPublicTokensApplyBuildingChannels(t *testing.T) {
 	db := newMultiBuildingTestDB(t)
 	ctx := context.Background()
 
@@ -209,12 +211,11 @@ func TestLegacyTokensPreserveDeviceScopeAndV2AppliesBuildingChannels(t *testing.
 	if err != nil {
 		t.Fatalf("generate legacy token: %v", err)
 	}
-	if got := len(legacy.OrangePis[0].URLs); got != 2 {
-		t.Fatalf("legacy endpoint should retain device channels, got %d urls", got)
+	if got := len(legacy.OrangePis[0].URLs); got != 1 {
+		t.Fatalf("legacy endpoint should apply the building channel rule, got %d urls", got)
 	}
-	if !strings.Contains(legacy.OrangePis[0].URLs[0], "/channel1?") ||
-		!strings.Contains(legacy.OrangePis[0].URLs[1], "/channel2?") {
-		t.Fatal("legacy endpoint changed device channel scope")
+	if !strings.Contains(legacy.OrangePis[0].URLs[0], "/channel2?") {
+		t.Fatalf("legacy endpoint returned an unexpected url: %s", legacy.OrangePis[0].URLs[0])
 	}
 	legacyJSON, err := json.Marshal(legacy)
 	if err != nil {
@@ -227,12 +228,11 @@ func TestLegacyTokensPreserveDeviceScopeAndV2AppliesBuildingChannels(t *testing.
 	if err != nil {
 		t.Fatalf("generate permanent token: %v", err)
 	}
-	if got := len(permanent.OrangePis[0].URLs); got != 2 {
-		t.Fatalf("permanent token should retain device channels, got %d urls", got)
+	if got := len(permanent.OrangePis[0].URLs); got != 1 {
+		t.Fatalf("permanent token should apply the building channel rule, got %d urls", got)
 	}
-	if !strings.Contains(permanent.OrangePis[0].URLs[0], "/channel1?") ||
-		!strings.Contains(permanent.OrangePis[0].URLs[1], "/channel2?") {
-		t.Fatal("permanent endpoint changed device channel scope")
+	if !strings.Contains(permanent.OrangePis[0].URLs[0], "/channel2?") {
+		t.Fatalf("permanent token returned an unexpected url: %s", permanent.OrangePis[0].URLs[0])
 	}
 
 	v2, err := authService.GeneratePublicTokenV2(ctx, building.ISmartID, false)
@@ -250,5 +250,123 @@ func TestLegacyTokensPreserveDeviceScopeAndV2AppliesBuildingChannels(t *testing.
 	}
 	if _, exists := v2.OrangePis[0].ChannelRemarks["channel1"]; exists {
 		t.Fatalf("v2 response should only contain visible channel remarks")
+	}
+}
+
+func TestManagedV2UsesVisibleSyncedChannelsForStaffWithoutAdminToken(t *testing.T) {
+	db := newMultiBuildingTestDB(t)
+	if err := db.AutoMigrate(&models.NVR{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	building := models.Building{ISmartID: "managed-building", Name: "Managed Building"}
+	if err := db.Create(&building).Error; err != nil {
+		t.Fatal(err)
+	}
+	device := models.OrangePi{
+		ISmartID: "managed-building", Name: "Managed OrangePi", ICCTVAuthServiceRemotePort: 29005,
+		UserChannels: []int{1}, AllChannels: []int{1, 2},
+		ChannelRemarks: map[string]string{
+			"channel3":  "历史备注",
+			"channel12": "旧备注",
+		},
+		ChannelPaths: map[string]string{
+			"channel3":  "OldGate",
+			"channel12": "OldBuildingGate",
+		},
+	}
+	if err := db.Create(&device).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.OrangePiBuilding{OrangePiID: device.ID, BuildingID: building.ID, AllowedChannels: []int{1}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	visible := true
+	hidden := false
+	group := models.NVR{
+		Name: "Managed group", BuildingID: building.ID, OrangePiID: device.ID,
+		RTSPUrls: []models.ChannelURL{
+			{ID: "camera-visible-12", Path: "channel12", URL: "rtsp://camera.example/12", Remark: "大门", Visible: &visible, SyncStatus: "success", SyncedOrangePiID: device.ID},
+			{ID: "camera-visible-3", Path: "channel3", URL: "rtsp://camera.example/3", Remark: "管理处", Visible: &visible, SyncStatus: "success", SyncedOrangePiID: device.ID},
+			{ID: "camera-hidden", Path: "channel4", URL: "rtsp://camera.example/4", Visible: &hidden, SyncStatus: "success", SyncedOrangePiID: device.ID},
+			{ID: "camera-pending", Path: "channel5", URL: "rtsp://camera.example/5", Visible: &visible, SyncStatus: "error", SyncedOrangePiID: device.ID},
+		},
+	}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.PublicNetConfig{ExternalIP: "203.0.113.10"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	authService := NewAuthService(db, nil, NewOrangePiService(db, NewPublicNetService(db)), NewBuildingService(db))
+	response, err := authService.GeneratePublicTokenV2(ctx, building.ISmartID, true)
+	if err != nil {
+		t.Fatalf("generate managed staff token: %v", err)
+	}
+	if len(response.OrangePis) != 1 || len(response.OrangePis[0].URLs) != 2 {
+		t.Fatalf("expected only visible synchronized channels, got %+v", response.OrangePis)
+	}
+	if !strings.Contains(response.OrangePis[0].URLs[0], "/channel3?") ||
+		!strings.Contains(response.OrangePis[0].URLs[1], "/channel12?") {
+		t.Fatalf("managed playback URLs are not numerically sorted: %v", response.OrangePis[0].URLs)
+	}
+	if !reflect.DeepEqual(response.OrangePis[0].ChannelRemarks, map[string]string{
+		"channel3":  "管理处",
+		"channel12": "大门",
+	}) {
+		t.Fatalf("managed remarks must match only returned RTSP paths: %v", response.OrangePis[0].ChannelRemarks)
+	}
+	encodedPayload := strings.Split(response.OrangePis[0].Token, ".")[0]
+	payloadBytes, err := base64.URLEncoding.DecodeString(encodedPayload)
+	if err != nil {
+		t.Fatalf("decode token payload: %v", err)
+	}
+	var payload VideoTokenPayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		t.Fatalf("parse token payload: %v", err)
+	}
+	if payload.IsStaff || len(payload.Channels) != 2 || payload.Channels[0] != "channel3" || payload.Channels[1] != "channel12" {
+		t.Fatalf("managed staff token is not channel-scoped: %+v", payload)
+	}
+}
+
+func TestOrangePiManagementTokenDoesNotRequireBuildingAssociation(t *testing.T) {
+	ctx := context.Background()
+	db := newMultiBuildingTestDB(t)
+	building := models.Building{ISmartID: "building-preview", Name: "Preview Building"}
+	if err := db.Create(&building).Error; err != nil {
+		t.Fatal(err)
+	}
+	device := models.OrangePi{
+		ISmartID:     building.ISmartID,
+		Name:         "Preview OrangePi",
+		AllChannels:  []int{1, 2},
+		UserChannels: []int{1},
+		ChannelPaths: map[string]string{"channel1": "channel1", "channel2": "Lobby"},
+	}
+	if err := db.Create(&device).Error; err != nil {
+		t.Fatal(err)
+	}
+	auth := NewAuthService(db, nil, NewOrangePiService(db, NewPublicNetService(db)), NewBuildingService(db))
+	token, err := auth.GenerateOrangePiManagementToken(ctx, building.ISmartID, device.ID)
+	if err != nil {
+		t.Fatalf("generate management token without association: %v", err)
+	}
+	payloadBytes, err := base64.URLEncoding.DecodeString(strings.Split(token, ".")[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload VideoTokenPayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.IsStaff || payload.BuildingID != building.ISmartID ||
+		len(payload.Channels) != 2 || payload.Channels[0] != "channel1" || payload.Channels[1] != "Lobby" {
+		t.Fatalf("unexpected management token claims: %+v", payload)
+	}
+	var links int64
+	if err := db.Model(&models.OrangePiBuilding{}).Count(&links).Error; err != nil || links != 0 {
+		t.Fatalf("token generation unexpectedly changed bindings: links=%d err=%v", links, err)
 	}
 }

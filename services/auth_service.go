@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -136,7 +137,7 @@ func NewAuthService(db *gorm.DB, adminService *AdminService, orangePiService *Or
 //   - 每个 OrangePi 独立生成 Token
 //   - is_staff=true: 使用该 OrangePi 的 AllChannels（如果存在）或 UserChannels
 //   - is_staff=false: 使用该 OrangePi 的 UserChannels
-//   - 旧版接口保留线上行为，不读取大厦级 AllowedChannels
+//   - 两种模式都会受大厦级 AllowedChannels 限制
 //   - 无论 is_active 状态如何，都会返回 OrangePi 信息和 URLs
 func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenResponse, error) {
 	// 检查建筑是否存在
@@ -157,6 +158,10 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 
 	if len(orangePis) == 0 {
 		return nil, fmt.Errorf("no orangepi devices found for building: %s", ismartID)
+	}
+	channelRules, err := s.loadBuildingChannelRules(ctx, building.ID)
+	if err != nil {
+		return nil, err
 	}
 	// 获取公网配置
 	var publicNetConfig models.PublicNetConfig
@@ -180,6 +185,7 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 			// 普通用户模式：只能访问 UserChannels
 			channelsToUse = opi.UserChannels
 		}
+		channelsToUse = restrictChannels(channelsToUse, channelRules[opi.ID])
 		// 构建 channel 名称列表（用于生成 token）
 		channelNames := make([]string, 0, len(channelsToUse))
 		for _, ch := range channelsToUse {
@@ -222,8 +228,28 @@ func (s *AuthService) GeneratePublicToken(ctx context.Context, ismartID string, 
 	}, nil
 }
 
+func (s *AuthService) GenerateOrangePiManagementToken(ctx context.Context, ismartID string, orangePiID int64) (string, error) {
+	var building models.Building
+	if err := s.db.WithContext(ctx).Where("ismart_id = ?", ismartID).First(&building).Error; err != nil {
+		return "", fmt.Errorf("building not found: %s", ismartID)
+	}
+	var device models.OrangePi
+	if err := s.db.WithContext(ctx).First(&device, orangePiID).Error; err != nil {
+		return "", fmt.Errorf("orangepi not found: %w", err)
+	}
+	channels := device.AllChannels
+	if len(channels) == 0 {
+		channels = device.UserChannels
+	}
+	channelNames := make([]string, 0, len(channels))
+	for _, channel := range normalizeChannels(channels) {
+		channelNames = append(channelNames, device.ChannelPath(channel))
+	}
+	return s.generateHMACToken(building.ISmartID, channelNames, true)
+}
+
 // GeneratePublicTokenV2 生成带频道备注和大厦频道权限的公开访问 Token。
-// 旧版 /api/auth/public 保留线上行为，不读取大厦级频道规则。
+// 旧版 /api/auth/public 使用相同的频道权限规则，但不返回频道备注。
 func (s *AuthService) GeneratePublicTokenV2(ctx context.Context, ismartID string, isStaff bool) (*PublicTokenV2Response, error) {
 	var building models.Building
 	if err := s.db.WithContext(ctx).Where("ismart_id = ?", ismartID).First(&building).Error; err != nil {
@@ -246,6 +272,17 @@ func (s *AuthService) GeneratePublicTokenV2(ctx context.Context, ismartID string
 	if err != nil {
 		return nil, err
 	}
+	var managedGroup models.NVR
+	hasManagedGroup := false
+	if s.db.Migrator().HasTable(&models.NVR{}) {
+		managedGroupErr := s.db.WithContext(ctx).
+			Where("building_id = ? AND orange_pi_id > 0", building.ID).
+			First(&managedGroup).Error
+		hasManagedGroup = managedGroupErr == nil
+		if managedGroupErr != nil && !errors.Is(managedGroupErr, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("failed to load managed RTSP group: %w", managedGroupErr)
+		}
+	}
 	var publicNetConfig models.PublicNetConfig
 	if err := s.db.WithContext(ctx).First(&publicNetConfig).Error; err != nil {
 		return nil, fmt.Errorf("public network configuration not found")
@@ -253,36 +290,98 @@ func (s *AuthService) GeneratePublicTokenV2(ctx context.Context, ismartID string
 
 	result := make([]OrangePiURLsV2, 0, len(orangePis))
 	for _, opi := range orangePis {
+		if hasManagedGroup && managedGroup.OrangePiID != opi.ID {
+			continue
+		}
 		var channelsToUse []int
-		if isStaff {
-			channelsToUse = opi.AllChannels
-			if len(channelsToUse) == 0 {
-				channelsToUse = opi.UserChannels
+		var managedItems []models.ChannelURL
+		if hasManagedGroup && managedGroup.OrangePiID == opi.ID {
+			managedItems = append([]models.ChannelURL(nil), managedGroup.RTSPUrls...)
+			sort.SliceStable(managedItems, func(i, j int) bool {
+				left := channelFromPath(managedItems[i].Path)
+				right := channelFromPath(managedItems[j].Path)
+				if left > 0 && right > 0 && left != right {
+					return left < right
+				}
+				if left > 0 && right <= 0 {
+					return true
+				}
+				if left <= 0 && right > 0 {
+					return false
+				}
+				return managedItems[i].Path < managedItems[j].Path
+			})
+			for _, item := range managedItems {
+				if item.Visible != nil && !*item.Visible {
+					continue
+				}
+				if item.SyncStatus != "success" {
+					continue
+				}
+				if channel := channelFromPath(item.Path); channel > 0 {
+					channelsToUse = append(channelsToUse, channel)
+				}
 			}
 		} else {
-			channelsToUse = opi.UserChannels
+			if isStaff {
+				channelsToUse = opi.AllChannels
+				if len(channelsToUse) == 0 {
+					channelsToUse = opi.UserChannels
+				}
+			} else {
+				channelsToUse = opi.UserChannels
+			}
+			channelsToUse = restrictChannels(channelsToUse, channelRules[opi.ID])
 		}
-		channelsToUse = restrictChannels(channelsToUse, channelRules[opi.ID])
 
 		channelNames := make([]string, 0, len(channelsToUse))
-		for _, channel := range channelsToUse {
-			channelNames = append(channelNames, opi.ChannelPath(channel))
+		managedByChannel := make(map[int]models.ChannelURL)
+		for _, item := range managedItems {
+			if channel := channelFromPath(item.Path); channel > 0 {
+				managedByChannel[channel] = item
+			}
 		}
-		token, err := s.generateHMACToken(ismartID, channelNames, isStaff)
+		for _, channel := range channelsToUse {
+			if item, ok := managedByChannel[channel]; ok {
+				channelNames = append(channelNames, item.Path)
+			} else {
+				channelNames = append(channelNames, opi.ChannelPath(channel))
+			}
+		}
+		tokenStaff := isStaff
+		if hasManagedGroup && managedGroup.OrangePiID == opi.ID {
+			// Managed groups use the explicit visible list for both roles.
+			// Do not issue a staff token, since the device treats staff as unrestricted.
+			tokenStaff = false
+		}
+		token, err := s.generateHMACToken(ismartID, channelNames, tokenStaff)
 		if err != nil {
 			return nil, err
 		}
 
 		urls := make([]string, 0, len(channelsToUse))
 		for _, channel := range channelsToUse {
+			path := opi.ChannelPath(channel)
+			if item, ok := managedByChannel[channel]; ok {
+				path = item.Path
+			}
 			urls = append(urls, streamURL(publicNetConfig.ExternalIP,
-				opi.ICCTVAuthServiceRemotePort, opi.ChannelPath(channel), token))
+				opi.ICCTVAuthServiceRemotePort, path, token))
+		}
+		remarks := channelRemarks(opi, channelsToUse)
+		if hasManagedGroup && managedGroup.OrangePiID == opi.ID {
+			remarks = make(map[string]string, len(channelsToUse))
+			for _, channel := range channelsToUse {
+				if item, ok := managedByChannel[channel]; ok {
+					remarks[item.Path] = strings.TrimSpace(item.Remark)
+				}
+			}
 		}
 		result = append(result, OrangePiURLsV2{
 			OrangePiID:     opi.ID,
 			OrangePiName:   opi.Name,
 			IsActive:       opi.IsActive,
-			ChannelRemarks: channelRemarks(opi, channelsToUse),
+			ChannelRemarks: remarks,
 			Token:          token,
 			URLs:           urls,
 		})
@@ -313,6 +412,10 @@ func (s *AuthService) GeneratePermanentToken(ctx context.Context, ismartID strin
 	if len(orangePis) == 0 {
 		return nil, fmt.Errorf("no orangepi devices found for building: %s", ismartID)
 	}
+	channelRules, err := s.loadBuildingChannelRules(ctx, building.ID)
+	if err != nil {
+		return nil, err
+	}
 	// 获取公网配置
 	var publicNetConfig models.PublicNetConfig
 	if err := s.db.WithContext(ctx).First(&publicNetConfig).Error; err != nil {
@@ -332,6 +435,7 @@ func (s *AuthService) GeneratePermanentToken(ctx context.Context, ismartID strin
 		} else {
 			channelsToUse = opi.UserChannels
 		}
+		channelsToUse = restrictChannels(channelsToUse, channelRules[opi.ID])
 		channelNames := make([]string, 0, len(channelsToUse))
 		for _, ch := range channelsToUse {
 			channelNames = append(channelNames, opi.ChannelPath(ch))

@@ -89,12 +89,17 @@ func Init() (*gorm.DB, error) {
 			&models.OrangePi{},
 			&models.OrangePiBuilding{},
 			&models.NVR{}, // NVR 依赖 Building
+			&models.RTSPSource{},
 		); err != nil {
 			initErr = err
 			return
 		}
 
 		if err := migrateLegacyOrangePiBuildings(conn); err != nil {
+			initErr = err
+			return
+		}
+		if err := MigrateRTSPLibrary(conn); err != nil {
 			initErr = err
 			return
 		}

@@ -8,6 +8,7 @@ package controllers
 //4. Delete(w http.ResponseWriter, r *http.Request) -> 删除设备
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -26,6 +27,7 @@ type OrangePiControllerInterface interface {
 	RemoteHealthCheck(w http.ResponseWriter, r *http.Request) //7.远程健康检查
 	// MediaMTX 远程管理
 	RemoteListMediaMTXPaths(w http.ResponseWriter, r *http.Request) //9.远程列出paths
+	RemotePreviewMediaMTXPaths(w http.ResponseWriter, r *http.Request)
 	SyncMediaMTXChannels(w http.ResponseWriter, r *http.Request)
 	RemoteGetMediaMTXPath(w http.ResponseWriter, r *http.Request)    //10.远程查询单个path
 	RemoteAddMediaMTXPath(w http.ResponseWriter, r *http.Request)    //11.远程新增path
@@ -291,6 +293,33 @@ func (c *OrangePiController) RemoteListMediaMTXPaths(w http.ResponseWriter, r *h
 	respondData(w, http.StatusOK, result)
 }
 
+func (c *OrangePiController) RemotePreviewMediaMTXPaths(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if err != nil || id <= 0 {
+		respondError(w, http.StatusBadRequest, "valid id is required")
+		return
+	}
+	ismartID := r.URL.Query().Get("ismartid")
+	if ismartID == "" {
+		respondError(w, http.StatusBadRequest, "ismartid is required")
+		return
+	}
+	page := 0
+	if value, parseErr := strconv.Atoi(r.URL.Query().Get("page")); parseErr == nil && value >= 0 {
+		page = value
+	}
+	itemsPerPage := 50
+	if value, parseErr := strconv.Atoi(r.URL.Query().Get("items_per_page")); parseErr == nil && value > 0 && value <= 500 {
+		itemsPerPage = value
+	}
+	result, err := c.service.RemoteListMediaMTXPathsForBuilding(r.Context(), id, ismartID, page, itemsPerPage)
+	if err != nil {
+		respondError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	respondData(w, http.StatusOK, result)
+}
+
 // 10. RemoteGetMediaMTXPath 远程查询单个 MediaMTX path
 func (c *OrangePiController) RemoteGetMediaMTXPath(w http.ResponseWriter, r *http.Request) {
 	idStr := r.URL.Query().Get("id")
@@ -382,7 +411,13 @@ func (c *OrangePiController) RemoteAddMediaMTXPath(w http.ResponseWriter, r *htt
 
 	result, err := c.service.RemoteAddMediaMTXPath(r.Context(), id, token, req.Name, req.Config)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		status := http.StatusBadGateway
+		if errors.Is(err, services.ErrInvalidChannelPath) {
+			status = http.StatusBadRequest
+		} else if errors.Is(err, services.ErrReservedChannelPath) {
+			status = http.StatusConflict
+		}
+		respondError(w, status, err.Error())
 		return
 	}
 	respondData(w, http.StatusOK, result)
@@ -430,7 +465,11 @@ func (c *OrangePiController) RemoteUpdateMediaMTXPath(w http.ResponseWriter, r *
 
 	result, err := c.service.RemoteUpdateMediaMTXPath(r.Context(), id, token, name, req.Config)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		status := http.StatusBadGateway
+		if errors.Is(err, services.ErrInvalidChannelPath) {
+			status = http.StatusBadRequest
+		}
+		respondError(w, status, err.Error())
 		return
 	}
 	respondData(w, http.StatusOK, result)

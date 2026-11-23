@@ -124,21 +124,15 @@ func TestNamedPathIDsStayStableAndDoNotGrantVisibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index, entry := range []OrangePiURLs{public.OrangePis[0], permanent.OrangePis[0], {
+	for _, entry := range []OrangePiURLs{public.OrangePis[0], permanent.OrangePis[0], {
 		Token: v2.OrangePis[0].Token, URLs: v2.OrangePis[0].URLs,
 	}} {
-		wantPaths := []string{"channel1", "BuildingGate"}
-		if index == 2 {
-			wantPaths = []string{"BuildingGate"}
-		}
-		if len(entry.URLs) != len(wantPaths) {
+		if len(entry.URLs) != 1 {
 			t.Fatalf("unexpected URLs: %v", entry.URLs)
 		}
-		for i, value := range entry.URLs {
-			parsed, err := url.Parse(value)
-			if err != nil || parsed.Path != "/"+wantPaths[i] || parsed.Query().Get("token") != entry.Token {
-				t.Fatalf("URL does not use real path: %v", entry.URLs)
-			}
+		parsed, err := url.Parse(entry.URLs[0])
+		if err != nil || parsed.Path != "/BuildingGate" || parsed.Query().Get("token") != entry.Token {
+			t.Fatalf("URL does not use real path: %v", entry.URLs)
 		}
 		payloadBytes, err := base64.URLEncoding.DecodeString(strings.Split(entry.Token, ".")[0])
 		if err != nil {
@@ -148,7 +142,7 @@ func TestNamedPathIDsStayStableAndDoNotGrantVisibility(t *testing.T) {
 		if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(payload.Channels, wantPaths) {
+		if !reflect.DeepEqual(payload.Channels, []string{"BuildingGate"}) {
 			t.Fatalf("token does not use exact path permissions: %+v", payload)
 		}
 	}
@@ -296,5 +290,25 @@ func TestMediaMTXPathsPaginationCompatibility(t *testing.T) {
 		if _, err := decodeMediaMTXPaths(strings.NewReader(body), 0); err == nil {
 			t.Fatalf("invalid metadata must not be silently accepted: %s", body)
 		}
+	}
+}
+
+func TestMediaMTXPathReadyStatePreservesMissingValue(t *testing.T) {
+	var paths []MediaMTXPathItem
+	if err := json.Unmarshal([]byte(`[
+		{"name":"idle"},
+		{"name":"active","ready":true},
+		{"name":"inactive","ready":false}
+	]`), &paths); err != nil {
+		t.Fatal(err)
+	}
+	if paths[0].Ready != nil {
+		t.Fatalf("missing ready state should remain unknown, got %v", *paths[0].Ready)
+	}
+	if paths[1].Ready == nil || !*paths[1].Ready {
+		t.Fatalf("ready=true should be preserved: %+v", paths[1])
+	}
+	if paths[2].Ready == nil || *paths[2].Ready {
+		t.Fatalf("ready=false should be preserved: %+v", paths[2])
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -34,11 +35,13 @@ type OrangePiServiceInterface interface {
 	RemoteHealthCheck(ctx context.Context, id int64) (*RemoteHealthStatus, error)                            //7.远程健康检查
 	// MediaMTX 远程管理
 	RemoteListMediaMTXPaths(ctx context.Context, id int64, token string, page int, itemsPerPage int) (*MediaMTXPathsListResponse, error) //9.远程列出paths
+	RemoteListMediaMTXPathsForBuilding(ctx context.Context, id int64, ismartID string, page, itemsPerPage int) (*MediaMTXPathsListResponse, error)
 	SyncMediaMTXChannels(ctx context.Context, id int64, token string) (*models.OrangePi, error)
 	RemoteGetMediaMTXPath(ctx context.Context, id int64, token string, name string) (*MediaMTXPathDetailResponse, error)                                   //10.远程查询单个path
 	RemoteAddMediaMTXPath(ctx context.Context, id int64, token string, name string, config map[string]interface{}) (*MediaMTXPathActionResponse, error)    //11.远程新增path
 	RemoteUpdateMediaMTXPath(ctx context.Context, id int64, token string, name string, config map[string]interface{}) (*MediaMTXPathActionResponse, error) //12.远程更新path
 	RemoteDeleteMediaMTXPath(ctx context.Context, id int64, token string, name string) (*MediaMTXPathActionResponse, error)                                //13.远程删除path
+	SyncRTSPGroup(ctx context.Context, group *models.NVR) error
 }
 
 // RemoteUpdateResult 远程更新结果
@@ -76,7 +79,7 @@ type RemoteHealthStatus struct {
 // MediaMTXPathItem MediaMTX path 项
 type MediaMTXPathItem struct {
 	Name      string `json:"name"`
-	Ready     bool   `json:"ready"`
+	Ready     *bool  `json:"ready,omitempty"`
 	ConfName  string `json:"confName"`
 	ReadyTime string `json:"readyTime"`
 	Source    string `json:"source"` // RTSP URL
@@ -115,6 +118,8 @@ type OrangePiService struct {
 	generateStaffToken TokenGeneratorFunc
 }
 
+type rtspGroupSyncContextKey struct{}
+
 // 0. NewOrangePiService 构造函数
 func NewOrangePiService(db *gorm.DB, publicNetService *PublicNetService) *OrangePiService {
 	return &OrangePiService{
@@ -126,6 +131,244 @@ func NewOrangePiService(db *gorm.DB, publicNetService *PublicNetService) *Orange
 // SetTokenGenerator 设置 Token 生成器（用于避免循环依赖）
 func (s *OrangePiService) SetTokenGenerator(fn TokenGeneratorFunc) {
 	s.generateStaffToken = fn
+}
+
+// SyncRTSPGroup applies persisted RTSP sources to the bound device. Paths that
+// were successfully managed by this group are deleted only after the group
+// update has explicitly removed them and no other group references the path.
+func (s *OrangePiService) SyncRTSPGroup(ctx context.Context, group *models.NVR) error {
+	if group == nil || group.BuildingID <= 0 || group.OrangePiID <= 0 {
+		return errors.New("rtsp group must be bound to a building and OrangePi")
+	}
+	var building models.Building
+	if err := s.db.WithContext(ctx).First(&building, group.BuildingID).Error; err != nil {
+		return err
+	}
+	if s.generateStaffToken == nil {
+		return errors.New("OrangePi token generator is not configured")
+	}
+	token, err := s.generateStaffToken(ctx, building.ISmartID, group.OrangePiID, true)
+	if err != nil {
+		return err
+	}
+	const pageSize = 100
+	first, err := s.RemoteListMediaMTXPaths(ctx, group.OrangePiID, token, 0, pageSize)
+	if err != nil {
+		return err
+	}
+	allPaths := append([]MediaMTXPathItem{}, first.Items...)
+	totalPages := (first.ItemsTotal + pageSize - 1) / pageSize
+	for page := 1; page < totalPages; page++ {
+		result, pageErr := s.RemoteListMediaMTXPaths(ctx, group.OrangePiID, token, page, pageSize)
+		if pageErr != nil {
+			return pageErr
+		}
+		if result.ItemsTotal != first.ItemsTotal {
+			return errors.New("device paths changed during synchronization")
+		}
+		allPaths = append(allPaths, result.Items...)
+	}
+	remote := make(map[string]MediaMTXPathItem, len(allPaths))
+	for _, path := range allPaths {
+		if _, duplicate := remote[path.Name]; duplicate {
+			return errors.New("duplicate device paths during synchronization")
+		}
+		remote[path.Name] = path
+	}
+	if len(remote) != first.ItemsTotal {
+		return errors.New("incomplete device paths during synchronization")
+	}
+	var device models.OrangePi
+	if err := s.db.WithContext(ctx).First(&device, group.OrangePiID).Error; err != nil {
+		return err
+	}
+	reserved := reservedRTSPGroupPaths(remote, device)
+	syncCtx := context.WithValue(ctx, rtspGroupSyncContextKey{}, true)
+	now := time.Now()
+	var firstErr error
+	remainingDeletes := make([]models.ChannelURL, 0, len(group.PendingRTSPDeletes))
+	for _, pending := range group.PendingRTSPDeletes {
+		path := strings.TrimSpace(pending.Path)
+		if path == "" || pending.SyncStatus != "success" || pending.SyncedOrangePiID != group.OrangePiID {
+			remainingDeletes = append(remainingDeletes, pending)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("cannot verify ownership of pending OrangePi Path %q", path)
+			}
+			continue
+		}
+		// Re-adding a camera cancels its pending deletion.
+		readded := false
+		for _, camera := range group.RTSPUrls {
+			if camera.Path == path {
+				readded = true
+				break
+			}
+		}
+		if readded {
+			continue
+		}
+		referenced, referenceErr := s.rtspPathReferencedByOtherGroup(ctx, group.ID, group.OrangePiID, path)
+		if referenceErr != nil {
+			remainingDeletes = append(remainingDeletes, pending)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to verify OrangePi Path %q references: %w", path, referenceErr)
+			}
+			continue
+		}
+		if referenced {
+			remainingDeletes = append(remainingDeletes, pending)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("cannot delete OrangePi Path %q: another RTSP group references it", path)
+			}
+			continue
+		}
+		if _, exists := remote[path]; !exists {
+			continue
+		}
+		detail, detailErr := s.RemoteGetMediaMTXPath(ctx, group.OrangePiID, token, path)
+		if detailErr != nil || pending.URL == "" || detail.Conf["source"] != pending.URL {
+			remainingDeletes = append(remainingDeletes, pending)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("cannot delete OrangePi Path %q: source changed or configuration could not be verified", path)
+			}
+			continue
+		}
+		if _, opErr := s.RemoteDeleteMediaMTXPath(syncCtx, group.OrangePiID, token, path); opErr != nil {
+			remainingDeletes = append(remainingDeletes, pending)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to delete OrangePi Path %q: %w", path, opErr)
+			}
+			continue
+		}
+		delete(remote, path)
+		delete(reserved, path)
+	}
+	group.PendingRTSPDeletes = remainingDeletes
+	for i := range group.RTSPUrls {
+		item := &group.RTSPUrls[i]
+		wasSynced := item.SyncedOrangePiID == group.OrangePiID &&
+			(item.SyncStatus == "success" || item.SyncedSource != "")
+		item.SyncStatus = "syncing"
+		item.SyncError = ""
+		config := map[string]interface{}{"source": item.URL}
+		var opErr error
+		existing, exists := remote[item.Path]
+		switch {
+		case wasSynced && !exists:
+			// A previously managed path disappearing is an external change. Do not
+			// recreate it automatically, because the path may have been removed
+			// intentionally or reassigned on the device.
+			opErr = fmt.Errorf("managed path %q is missing on OrangePi", item.Path)
+		case wasSynced && exists:
+			if item.SyncedSource != "" && existing.Source != item.SyncedSource && existing.Source != item.URL {
+				detail, detailErr := s.RemoteGetMediaMTXPath(ctx, group.OrangePiID, token, item.Path)
+				if detailErr != nil || (detail.Conf["source"] != item.SyncedSource && detail.Conf["source"] != item.URL) {
+					opErr = fmt.Errorf("managed path %q source changed on OrangePi", item.Path)
+					break
+				}
+			}
+			if existing.Source != "" && existing.Source == item.URL {
+				item.SyncStatus = "success"
+				item.SyncedAt = &now
+				item.SyncedOrangePiID = group.OrangePiID
+				item.SyncedSource = item.URL
+				continue
+			}
+			referenced, referenceErr := s.rtspPathReferencedByOtherGroup(ctx, group.ID, group.OrangePiID, item.Path)
+			if referenceErr != nil || referenced {
+				opErr = fmt.Errorf("cannot update path %q: ownership is shared or could not be verified", item.Path)
+				break
+			}
+			_, opErr = s.RemoteUpdateMediaMTXPath(syncCtx, group.OrangePiID, token, item.Path, config)
+		case exists || reserved[item.Path]:
+			// Never silently move an existing database binding to another
+			// channel. The administrator must resolve the conflict explicitly.
+			opErr = fmt.Errorf("path %q is already reserved on OrangePi", item.Path)
+		default:
+			_, opErr = s.RemoteAddMediaMTXPath(syncCtx, group.OrangePiID, token, item.Path, config)
+		}
+		if opErr != nil {
+			item.SyncStatus = "error"
+			item.SyncError = opErr.Error()
+			if firstErr == nil {
+				firstErr = opErr
+			}
+			continue
+		}
+		item.SyncStatus = "success"
+		item.SyncedAt = &now
+		item.SyncedOrangePiID = group.OrangePiID
+		item.SyncedSource = item.URL
+		reserved[item.Path] = true
+		remote[item.Path] = MediaMTXPathItem{Name: item.Path, Source: item.URL}
+	}
+	return firstErr
+}
+
+func (s *OrangePiService) rtspPathReferencedByOtherGroup(ctx context.Context, groupID, orangePiID int64, path string) (bool, error) {
+	var groups []models.NVR
+	if err := s.db.WithContext(ctx).
+		Where("id <> ?", groupID).
+		Find(&groups).Error; err != nil {
+		return false, err
+	}
+	for _, group := range groups {
+		for _, item := range group.RTSPUrls {
+			if (group.OrangePiID == orangePiID || item.SyncedOrangePiID == orangePiID) &&
+				strings.EqualFold(strings.TrimSpace(item.Path), path) {
+				return true, nil
+			}
+		}
+		for _, item := range group.PendingRTSPDeletes {
+			if item.SyncedOrangePiID == orangePiID && strings.EqualFold(strings.TrimSpace(item.Path), path) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func (s *OrangePiService) RemoteListMediaMTXPathsForBuilding(ctx context.Context, id int64, ismartID string, page, itemsPerPage int) (*MediaMTXPathsListResponse, error) {
+	if s.generateStaffToken == nil {
+		return nil, errors.New("OrangePi token generator is not configured")
+	}
+	token, err := s.generateStaffToken(ctx, ismartID, id, true)
+	if err != nil {
+		return nil, err
+	}
+	return s.RemoteListMediaMTXPaths(ctx, id, token, page, itemsPerPage)
+}
+
+// reservedRTSPGroupPaths returns names that can actually conflict with a
+// persisted RTSP group. The remote MediaMTX catalogue is authoritative here;
+// legacy permission arrays and stale channel catalogue entries are not device
+// Paths and must not force allocations such as channel23 on a device that only
+// contains channel1 and channel2.
+func reservedRTSPGroupPaths(remote map[string]MediaMTXPathItem, device models.OrangePi) map[string]bool {
+	reserved := make(map[string]bool, len(remote)+len(device.ChannelPaths))
+	for name := range remote {
+		reserved[name] = true
+	}
+	for key, path := range device.ChannelPaths {
+		if _, exists := remote[path]; exists {
+			reserved[key] = true
+			reserved[path] = true
+		}
+		if _, exists := remote[key]; exists {
+			reserved[key] = true
+			reserved[path] = true
+		}
+	}
+	return reserved
+}
+
+func nextAvailableChannelPath(reserved map[string]bool) (string, int) {
+	for next := 1; ; next++ {
+		candidate := fmt.Sprintf("channel%d", next)
+		if !reserved[candidate] {
+			return candidate, next
+		}
+	}
 }
 
 // 1. List 查询设备列表
@@ -692,11 +935,15 @@ func (s *OrangePiService) RemoteGetMediaMTXPath(ctx context.Context, id int64, t
 
 	// 构建远程URL
 	remoteURL := fmt.Sprintf("http://%s:%d/api/device/mediamtx/paths/%s?token=%s",
-		publicNetConfig.ExternalIP, device.ICCTVAuthServiceRemotePort, name, token)
+		publicNetConfig.ExternalIP, device.ICCTVAuthServiceRemotePort, url.PathEscape(name), url.QueryEscape(token))
 
 	// 发送HTTP请求
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(remoteURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to remote device: %w", err)
 	}
@@ -706,20 +953,59 @@ func (s *OrangePiService) RemoteGetMediaMTXPath(ctx context.Context, id int64, t
 		return nil, fmt.Errorf("remote device returned status: %d", resp.StatusCode)
 	}
 
-	var result MediaMTXPathDetailResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var raw map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-
-	return &result, nil
+	if raw == nil {
+		return nil, errors.New("remote device returned empty path configuration")
+	}
+	conf, nested := raw["conf"].(map[string]interface{})
+	if !nested {
+		delete(raw, "name")
+		conf = raw
+	}
+	return &MediaMTXPathDetailResponse{Name: name, Conf: conf}, nil
 }
 
 // 11. RemoteAddMediaMTXPath 远程新增 MediaMTX path
 func (s *OrangePiService) RemoteAddMediaMTXPath(ctx context.Context, id int64, token string, name string, config map[string]interface{}) (*MediaMTXPathActionResponse, error) {
+	if err := validateChannelPathConfig(name, config); err != nil {
+		return nil, err
+	}
 	// 获取设备信息
 	var device models.OrangePi
 	if err := s.db.WithContext(ctx).First(&device, id).Error; err != nil {
 		return nil, err
+	}
+	if _, syncingRTSPGroup := ctx.Value(rtspGroupSyncContextKey{}).(bool); !syncingRTSPGroup {
+		// Keep the legacy manual-add guard. RTSP group synchronization has
+		// already checked the complete live remote catalogue and must not be
+		// blocked by stale permission/catalogue IDs.
+		if _, reserved := device.ChannelPaths[name]; reserved {
+			return nil, ErrReservedChannelPath
+		}
+		for _, path := range device.ChannelPaths {
+			if path == name {
+				return nil, ErrReservedChannelPath
+			}
+		}
+		for _, channel := range append(append([]int{}, device.AllChannels...), device.UserChannels...) {
+			if channel == numericChannel(name) {
+				return nil, ErrReservedChannelPath
+			}
+		}
+		var links []models.OrangePiBuilding
+		if err := s.db.WithContext(ctx).Where("orange_pi_id = ?", id).Find(&links).Error; err != nil {
+			return nil, err
+		}
+		for _, link := range links {
+			for _, channel := range link.AllowedChannels {
+				if channel == numericChannel(name) {
+					return nil, ErrReservedChannelPath
+				}
+			}
+		}
 	}
 
 	// 获取公网配置
@@ -730,7 +1016,7 @@ func (s *OrangePiService) RemoteAddMediaMTXPath(ctx context.Context, id int64, t
 
 	// 构建远程URL
 	remoteURL := fmt.Sprintf("http://%s:%d/api/device/mediamtx/paths?token=%s",
-		publicNetConfig.ExternalIP, device.ICCTVAuthServiceRemotePort, token)
+		publicNetConfig.ExternalIP, device.ICCTVAuthServiceRemotePort, url.QueryEscape(token))
 
 	// 强制设置固定配置
 	config["sourceOnDemand"] = false // 持续拉流
@@ -749,12 +1035,19 @@ func (s *OrangePiService) RemoteAddMediaMTXPath(ctx context.Context, id int64, t
 
 	// 发送HTTP请求
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Post(remoteURL, "application/json", bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, remoteURL, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to remote device: %w", err)
 	}
 	defer resp.Body.Close()
-
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("remote device returned status: %d", resp.StatusCode)
+	}
 	var result MediaMTXPathActionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
@@ -771,6 +1064,9 @@ func (s *OrangePiService) RemoteAddMediaMTXPath(ctx context.Context, id int64, t
 
 // 12. RemoteUpdateMediaMTXPath 远程更新 MediaMTX path
 func (s *OrangePiService) RemoteUpdateMediaMTXPath(ctx context.Context, id int64, token string, name string, config map[string]interface{}) (*MediaMTXPathActionResponse, error) {
+	if err := validateChannelPathConfig(name, config); err != nil {
+		return nil, err
+	}
 	// 获取设备信息
 	var device models.OrangePi
 	if err := s.db.WithContext(ctx).First(&device, id).Error; err != nil {
@@ -785,7 +1081,7 @@ func (s *OrangePiService) RemoteUpdateMediaMTXPath(ctx context.Context, id int64
 
 	// 构建远程URL
 	remoteURL := fmt.Sprintf("http://%s:%d/api/device/mediamtx/paths/%s?token=%s",
-		publicNetConfig.ExternalIP, device.ICCTVAuthServiceRemotePort, name, token)
+		publicNetConfig.ExternalIP, device.ICCTVAuthServiceRemotePort, name, url.QueryEscape(token))
 
 	// 强制设置固定配置
 	config["sourceOnDemand"] = false // 持续拉流
@@ -814,10 +1110,15 @@ func (s *OrangePiService) RemoteUpdateMediaMTXPath(ctx context.Context, id int64
 		return nil, fmt.Errorf("failed to connect to remote device: %w", err)
 	}
 	defer resp.Body.Close()
-
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("remote device returned status: %d", resp.StatusCode)
+	}
 	var result MediaMTXPathActionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("remote device failed to update MediaMTX path: status %d", result.StatusCode)
 	}
 
 	return &result, nil
@@ -839,7 +1140,7 @@ func (s *OrangePiService) RemoteDeleteMediaMTXPath(ctx context.Context, id int64
 
 	// 构建远程URL
 	remoteURL := fmt.Sprintf("http://%s:%d/api/device/mediamtx/paths/%s?token=%s",
-		publicNetConfig.ExternalIP, device.ICCTVAuthServiceRemotePort, name, token)
+		publicNetConfig.ExternalIP, device.ICCTVAuthServiceRemotePort, url.PathEscape(name), url.QueryEscape(token))
 
 	// 创建 DELETE 请求
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -853,10 +1154,26 @@ func (s *OrangePiService) RemoteDeleteMediaMTXPath(ctx context.Context, id int64
 		return nil, fmt.Errorf("failed to connect to remote device: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("remote device path %q was not found", name)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("remote device returned status: %d", resp.StatusCode)
+	}
+	if resp.StatusCode == http.StatusNoContent {
+		return &MediaMTXPathActionResponse{
+			Action:     "delete",
+			Name:       name,
+			StatusCode: resp.StatusCode,
+		}, nil
+	}
 
 	var result MediaMTXPathActionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("remote device failed to delete MediaMTX path: status %d", result.StatusCode)
 	}
 
 	return &result, nil

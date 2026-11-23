@@ -1,0 +1,3 @@
+services:
+  web:
+    image: icctv-web-admin:20261119-rtsp-list

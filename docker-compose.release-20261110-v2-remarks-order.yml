@@ -1,0 +1,5 @@
+services:
+  app:
+    image: icctv-http-service:20261110-v2-remarks-order
+  web:
+    image: icctv-web-admin:20261110-v2-remarks-order

@@ -2,7 +2,6 @@ package container
 
 import (
 	"context"
-	"errors"
 	"os"
 	"strconv"
 	"time"
@@ -48,33 +47,25 @@ func Build() (*Container, error) {
 		Building:  services.NewBuildingService(db),
 		Device:    services.NewDeviceService(db),
 		PublicNet: services.NewPublicNetService(db),
-		NVR:       services.NewNVRService(db),
 	}
 	serviceSet.OrangePi = services.NewOrangePiService(db, serviceSet.PublicNet)
 	serviceSet.Auth = services.NewAuthService(db, serviceSet.Admin, serviceSet.OrangePi, serviceSet.Building)
+	serviceSet.NVR = services.NewNVRService(db, serviceSet.OrangePi.SyncRTSPGroup)
 
 	// 设置 OrangePi 服务的 Token 生成器（解决循环依赖）
 	serviceSet.OrangePi.SetTokenGenerator(func(ctx context.Context, ismartID string, orangePiID int64, isStaff bool) (string, error) {
-		resp, err := serviceSet.Auth.GeneratePublicToken(ctx, ismartID, isStaff)
-		if err != nil {
-			return "", err
-		}
-		for _, orangePi := range resp.OrangePis {
-			if orangePi.OrangePiID == orangePiID {
-				return orangePi.Token, nil
-			}
-		}
-		return "", errors.New("no orangepi found")
+		return serviceSet.Auth.GenerateOrangePiManagementToken(ctx, ismartID, orangePiID)
 	})
 
 	ctrlSet := routes.ControllerSet{
-		Auth:      controllers.NewAuthController(serviceSet.Auth),
-		Admin:     controllers.NewAdminController(serviceSet.Admin),
-		OrangePi:  controllers.NewOrangePiController(serviceSet.OrangePi),
-		Building:  controllers.NewBuildingController(serviceSet.Building),
-		Device:    controllers.NewDeviceController(serviceSet.Device, serviceSet.OrangePi),
-		PublicNet: controllers.NewPublicNetController(serviceSet.PublicNet),
-		NVR:       controllers.NewNVRController(serviceSet.NVR),
+		Auth:       controllers.NewAuthController(serviceSet.Auth),
+		Admin:      controllers.NewAdminController(serviceSet.Admin),
+		OrangePi:   controllers.NewOrangePiController(serviceSet.OrangePi),
+		Building:   controllers.NewBuildingController(serviceSet.Building),
+		Device:     controllers.NewDeviceController(serviceSet.Device, serviceSet.OrangePi),
+		PublicNet:  controllers.NewPublicNetController(serviceSet.PublicNet),
+		NVR:        controllers.NewNVRController(serviceSet.NVR),
+		RTSPSource: controllers.NewRTSPSourceController(services.NewRTSPSourceService(db, serviceSet.NVR)),
 	}
 
 	middlewareSet := routes.MiddlewareSet{

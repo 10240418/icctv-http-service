@@ -1,0 +1,5 @@
+services:
+  app:
+    image: icctv-http-service:20261123-rtsp-library
+  web:
+    image: icctv-web-admin:20261123-rtsp-library
